@@ -1,5 +1,4 @@
-(ns pipeline.test
-  )
+(ns test)
 
 (defn rand-sleep [ms variance]
   (let [x (- ms variance)
