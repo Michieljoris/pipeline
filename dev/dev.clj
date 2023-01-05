@@ -65,7 +65,7 @@
   (a/close! halt))
 
 (defn pre-xf [{:keys [data xfs] :as x}]
-  (tap> {:pre-xf x})
+  ;; (tap> {:pre-xf x})
   ((:log-count (first xfs) #(do)))
   (-> (update x :transforms (fnil conj []) data)
       (stat/mark :xf-start-time))
@@ -93,7 +93,7 @@
                    (assoc ret :split 3)]
                   ret
                   ))
-           :log-count (u/log-count "Processed first xf" 300)
+           :log-count (u/log-count "Processed first xf" 20)
            ;; :mult true
            }
           {:step 2
@@ -109,13 +109,14 @@
           {:step 3
            :f (fn [data]
                 ;; (tap> {:step3 data})
-                (test/rand-work 30 10)
+                (test/rand-work 300 10)
                 ;; (update data :step (fnil conj []) 2)
                 ;; (tap> data)
                 (update data :step (fnil conj []) 2))}
           ])
 
 
+(def thread-count (atom 5))
 
 
 (comment
@@ -138,27 +139,29 @@
   (count (:periods (:duration (deref stat/stats-atom))))
   (keys (deref stat/stats-atom))
 
+ (reset! thread-count 3)
+
   (let [ _           (def halt (a/chan))
         _            (stat/init-stats [] 60 halt)
         _            (tap> :==================================================)
         start-time   (stat/now)
-        input-size   50
+        input-size   1000
         log          tap>
         log          (constantly nil)
-        thread-count 10
+        max-thread-count 5
 
         on-result (fn [update-collect x]
                     (stat/add-stat :result (- (stat/now) (:queued-time x)))
                     (update-collect))
         on-error  (fn [update-collect x]
                    (update-collect))
-        source    (fn [] (a/to-chan! (map #(hash-map :id %) (range 50))))
-        pipeline  (p/pipeline xfs (p/threads thread-count (count xfs) halt)
+        source    (fn [] (a/to-chan! (map #(hash-map :id %) (range input-size))))
+        pipeline  (p/pipeline xfs (p/threads thread-count max-thread-count (count xfs) halt)
                               {
                                :pre-xf pre-xf
                                ;; :post-xf post-xf
                                })
-        promises  (p/flow source pipeline {:n            1
+        promises  (p/flow source pipeline {:n            500
                                            :on-start     (fn []
                                                         (tap> :starting-pipeline!!!))
                                            :on-queue     #(assoc % :queued-time (stat/now)) ;;first queueing of source item
@@ -175,7 +178,7 @@
                      :duration (/ (- (stat/now) start-time) 1000.0)})))
     )
 
-  ;; (a/close! halt)
+  (a/close! halt)
   )
 
 

@@ -1,9 +1,11 @@
 #+title: Readme
 
 * Description
-Apply transforming functions (xfs) to a source in parallel/concurrently using a
-fixed number of threads. If an xf returns a multiple result each can be
+pply transforming functions (xfs) to a source in parallel/concurrently using a
+variable number of threads. If an xf returns a multiple result each can be
 processed further. Results are unordered.
+
+Thread count can be varied on the fly, set to zero to pause job.
 
 Threads can be shut down at any time by closing a halt channel.
 

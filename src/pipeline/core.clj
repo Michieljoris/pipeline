@@ -3,29 +3,40 @@
             [clojure.spec.alpha :as s]
             [pipeline.util :as u]))
 
-(defn threads [thread-count queue-count halt]
-  (u/assert-spec ::threads-args {:thread-count thread-count :queue-count queue-count :halt halt})
+(defn poll-thread-count [thread-i thread-count halt]
+  (loop []
+    (when (and (>= thread-i @thread-count))
+      (let [[_ c] (a/alts!! [(a/timeout 1000) halt]) ]
+        (when (not= c halt)
+          (recur))))))
+
+(defn threads [thread-count max-thread-count queue-count halt]
+  (u/assert-spec ::threads-args {:thread-count thread-count :max-thread-count max-thread-count
+                                 :queue-count queue-count :halt halt})
   (let [queues (->> (repeatedly a/chan) (take queue-count))
         p-queues (reverse (into (if halt [halt] []) queues))]
-    (dotimes [_ thread-count]
+    (dotimes [thread-i max-thread-count]
       (a/thread
         (loop []
+          (tap> {:thread-i thread-i})
+          (poll-thread-count thread-i thread-count halt)
           (let [[x-to-process _] (a/alts!! p-queues :priority true)]
             (when (some? x-to-process)
               (let [xf (-> x-to-process :xfs first)
                     {:keys [xfs done start end data] :as x} ((:wrapped-f xf) x-to-process)]
                 (a/go (doseq [data data]
-                      (let [status (cond (instance? Throwable data) :error
-                                         (empty? xfs)               :result
-                                         (nil? data)                :nil
-                                         :else                      :queue)
-                            x' (assoc x :data  data :status status)]
-                        (if (= status :queue)
-                          (do  (start)
-                               (a/>! (-> xfs first :queue) x'))
-                          (a/>! done x'))))
-                    (end)))
-              (recur))))))
+                        (let [status (cond (instance? Throwable data) :error
+                                           (empty? xfs)               :result
+                                           (nil? data)                :nil
+                                           :else                      :queue)
+                              x' (assoc x :data  data :status status)]
+                          (if (= status :queue)
+                            (do  (start)
+                                 (a/>! (-> xfs first :queue) x'))
+                            (a/>! done x'))))
+                      (end)))
+              (recur))))
+        (tap> {:thread-done thread-i})))
     queues))
 
 (defn try-xf [{:keys [mult f]} data]
@@ -64,8 +75,8 @@
          monitor (atom 0)
          {:keys [start] :as wrapper} {:start #(swap! monitor inc)
                                       :end   #(when (zero? (swap! monitor dec))
-                                              (on-done)
-                                              (a/close! done))
+                                                (on-done)
+                                                (a/close! done))
                                       :xfs   xfs
                                       :done  done}
          pre-xf (map (fn [data]
@@ -80,14 +91,15 @@
        (let [{:keys [status] :as x} (a/<! done)]
          (if (some? x)
            (recur (on-processed #(update collect status conj x) x status))
-           (doseq [[out p] promises]
-             (deliver p (or (get collect out) :done))))))
+           (doseq [[out-type p] promises]
+             (deliver p (or (get collect out-type) :done))))))
      promises)))
 
 (s/def ::f fn?)
 (s/def ::wrapped-f fn?)
 (s/def ::mult (s/nilable boolean))
-(s/def ::thread-count pos-int?)
+(s/def ::thread-count (comp nat-int? deref))
+(s/def ::max-thread-count pos-int?)
 (s/def ::queue-count pos-int?)
 (s/def ::chan #(instance? clojure.core.async.impl.channels.ManyToManyChannel %))
 (s/def ::halt ::chan)
@@ -99,7 +111,7 @@
 (s/def ::pipeline-xf (s/keys :req-un [::wrapped-f ::queue]
                              :opt-un [::mult]))
 (s/def ::pipeline-xfs (s/and (s/coll-of ::pipeline-xf) seq))
-(s/def ::threads-args (s/keys :req-un [::thread-count ::queue-count]
+(s/def ::threads-args (s/keys :req-un [::thread-count ::max-thread-count ::queue-count]
                               :opt-un [::chan]))
 
 (s/def ::pipeline-args (s/keys :req-un [::xfs ::queues]
