@@ -1,16 +1,12 @@
 #+title: Readme
 
 * Description
-pply transforming functions (xfs) to a source in parallel/concurrently using a
-variable number of threads. If an xf returns a multiple result each can be
-processed further. Results are unordered.
+Apply transforming functions (xfs) to a source in parallel/concurrently. If an
+xf returns a multiple result each can be processed further. Results are
+unordered.
 
-Thread count can be varied on the fly, set to zero to pause job.
 
 Threads can be shut down at any time by closing a halt channel.
-
-Source can be a collection, a channel, a buffered reader (eg. result of
-(io/reader "file-name")) or a function returning any of these.
 
 Xf functions is a list of maps, each of which should have at least one entry
 under the :f key, namely the transforming function. This function takes a single
@@ -45,6 +41,12 @@ Data elements are wrapped so they can carry their (wrapped) transformations with
 them. The pre-xf, post-xf and on-queue hooks can also enhance this wrapped data
 element at any time, but also use it to keep stats, and do things like logging
 every so many elements.
+
+
+Thread count can be varied on the fly, set to zero to pause job.
+Source can be a collection, a channel, a buffered reader (eg. result of
+(io/reader "file-name")) or a function returning any of these.
+
 
 * Rationale
 Calculating the minimum number of threads to maximize use of a processor is a

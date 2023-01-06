@@ -10,8 +10,11 @@
 
 ;; TODO: Calculate ratio of blocking vs working and log as job is running and take blocking quotient into account!!!!
 ;; TODO: Adjust number of threads on the fly!!!!
+;; TODO: auto adjust thread count to max throughput, minimal threads, then set to 80% for example
+;; TODO: how about the results from multiple datasets? That should be returned on done!
 ;; TODO: log estimate on likely duration of job
  ;; TODO: merge xfs if they indicate they don't return multiple results
+;; TODO: log every so many seconds, but only if there's something to log
  ;; TODO: test with real pipeline.
  ;; TODO: benchmark!!!!
  ;; TODO: inspect all current saigo pipelines, and document, and see if they can use submitter
@@ -139,44 +142,50 @@
   (count (:periods (:duration (deref stat/stats-atom))))
   (keys (deref stat/stats-atom))
 
- (reset! thread-count 3)
+ (reset! thread-count 1)
 
-  (let [ _           (def halt (a/chan))
-        _            (stat/init-stats [] 60 halt)
-        _            (tap> :==================================================)
-        start-time   (stat/now)
-        input-size   1000
-        log          tap>
-        log          (constantly nil)
-        max-thread-count 5
+ (let [ _           (def halt (a/chan))
+       _            (stat/init-stats [] 60 halt)
+       _            (tap> :==================================================)
+       start-time   (stat/now)
+       input-size   1000
+       log          tap>
+       log          (constantly nil)
+       max-thread-count 5
 
-        on-result (fn [update-collect x]
-                    (stat/add-stat :result (- (stat/now) (:queued-time x)))
-                    (update-collect))
-        on-error  (fn [update-collect x]
+       on-result (fn [update-collect x]
+                   (stat/add-stat :result (- (stat/now) (:queued-time x)))
                    (update-collect))
-        source    (fn [] (a/to-chan! (map #(hash-map :id %) (range input-size))))
-        pipeline  (p/pipeline xfs (p/threads thread-count max-thread-count (count xfs) halt)
-                              {
-                               :pre-xf pre-xf
-                               ;; :post-xf post-xf
-                               })
-        promises  (p/flow source pipeline {:n            500
-                                           :on-start     (fn []
-                                                        (tap> :starting-pipeline!!!))
-                                           :on-queue     #(assoc % :queued-time (stat/now)) ;;first queueing of source item
-                                           :on-processed (fn [update-collect x status]
-                                                           (case status
-                                                             :result (on-result update-collect x)
-                                                             :error  (on-error update-collect x)
-                                                             :nil    u/noop))
-                                           :on-done      (fn [] ;;all source items processed
-                                                           (a/close! halt)
-                                                           (tap> :done!!!!!!))})]
-    (doseq [[status p] promises]
-      (future (tap> {status    (if (keyword? @p) @p (count @p))
-                     :duration (/ (- (stat/now) start-time) 1000.0)})))
-    )
+       on-error  (fn [update-collect x]
+                   (update-collect))
+       source    (fn [] (a/to-chan! (map #(hash-map :id %) (range input-size))))
+       thread-hook (partial u/poll-thread-count thread-count halt)
+       {:keys [queues halt]}  (p/threads max-thread-count (count xfs) thread-hook)
+       _ (def halt halt)
+       pipeline  (p/pipeline xfs queues {
+                                         :pre-xf pre-xf
+                                         ;; :post-xf post-xf
+                                         })
+
+
+       out (p/flow source pipeline {:n            1
+                                    :on-start     (fn []
+                                                    (tap> :starting-pipeline!!!))
+                                    :on-first-queue     #(assoc % :queued-time (stat/now)) ;;first queueing of source item
+
+                                    :on-done      (fn [] ;;all source items processed
+                                                    (a/close! halt)
+                                                    (tap> :done!!!!!!))})
+       on-processed (fn [update-collect x status]
+                      (case status
+                        :result (on-result update-collect x)
+                        :error  (on-error update-collect x)
+                        :nil    u/noop))
+       promises (u/out->promises out on-processed)]
+   (doseq [[status p] promises]
+     (future (tap> {status    (if (keyword? @p) @p (count @p))
+                    :duration (/ (- (stat/now) start-time) 1000.0)})))
+   )
 
   (a/close! halt)
   )

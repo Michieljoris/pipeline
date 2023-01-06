@@ -3,27 +3,25 @@
             [clojure.spec.alpha :as s]
             [pipeline.util :as u]))
 
-(defn poll-thread-count [thread-i thread-count halt]
-  (loop []
-    (when (and (>= thread-i @thread-count))
-      (let [[_ c] (a/alts!! [(a/timeout 1000) halt]) ]
-        (when (not= c halt)
-          (recur))))))
-
-(defn threads [thread-count max-thread-count queue-count halt]
-  (u/assert-spec ::threads-args {:thread-count thread-count :max-thread-count max-thread-count
-                                 :queue-count queue-count :halt halt})
-  (let [queues (->> (repeatedly a/chan) (take queue-count))
-        p-queues (reverse (into (if halt [halt] []) queues))]
-    (dotimes [thread-i max-thread-count]
+(defn threads
+  "Starts up thread-count threads, and creates queue-count queue channels. Each
+   thread is set up to process data as put on the queues. Returns a map with the
+   queues and a halt channel, that when closed stops all threads. The
+   process-hook function gets called with the thread number every time the
+   thread starts any work."
+  [thread-count queue-count process-hook]
+  (u/assert-spec ::threads-args {:thread-count thread-count :queue-count queue-count :process-hook process-hook})
+  (let [halt (a/chan)
+        queues (->> (repeatedly a/chan) (take queue-count))
+        p-queues (reverse (into [halt] queues))]
+    (dotimes [thread-i thread-count]
       (a/thread
         (loop []
-          (tap> {:thread-i thread-i})
-          (poll-thread-count thread-i thread-count halt)
+          (process-hook thread-i)
           (let [[x-to-process _] (a/alts!! p-queues :priority true)]
-            (when (some? x-to-process)
-              (let [xf (-> x-to-process :xfs first)
-                    {:keys [xfs done start end data] :as x} ((:wrapped-f xf) x-to-process)]
+            (when (some? x-to-process) ;;highest priority halt can be closed->thread finishes
+              (let [f (-> x-to-process :xfs first :wrapped-f)
+                    {:keys [xfs out queue dequeue data] :as x} (f x-to-process)]
                 (a/go (doseq [data data]
                         (let [status (cond (instance? Throwable data) :error
                                            (empty? xfs)               :result
@@ -31,75 +29,80 @@
                                            :else                      :queue)
                               x' (assoc x :data  data :status status)]
                           (if (= status :queue)
-                            (do  (start)
+                            (do  (queue)
                                  (a/>! (-> xfs first :queue) x'))
-                            (a/>! done x'))))
-                      (end)))
+                            (a/>! out x'))))
+                      (dequeue)))
               (recur))))
         (tap> {:thread-done thread-i})))
-    queues))
+    {:queues queues :halt halt}))
 
-(defn try-xf [{:keys [mult f]} data]
+(defn- try-xf [{:keys [mult f]} data]
   (try
     (let [result (f data)]
       (if mult
         (if (seq result) result [nil])
         [result]))
-    (catch Throwable t t)))
+    (catch Throwable t [t])))
 
-(defn pipeline
-  ([xfs queues] (pipeline xfs queues nil))
-  ([xfs queues {:keys [pre-xf post-xf] :or {pre-xf identity post-xf identity}}]
-   (u/assert-spec ::pipeline-args {:xfs xfs :queues queues})
-   (assert (>= (count queues) (count xfs))
-           (str "Not enough queues (" (count queues) ") for steps in pipeline ("(count xfs) ")"))
-   (map (fn [xf queue]
-          (merge xf {:wrapped-f (fn [{:keys [data xfs] :as x}]
-                                  (-> (pre-xf x)
-                                      (assoc :data (try-xf xf data)
-                                             :xfs (rest xfs))
-                                      post-xf))
-                     :queue     queue}))
-        xfs queues)))
+(defn pipe
+   "Takes a collection of maps (each defining a transformation) and queues (as
+   returned by the threads fn) and returns a pipe that can be passed to the flow
+   fn, or assigned to an input element in a pre-xf or post-xf hook. A pipe is
+   the list of transformation functions with assigned queues and potential
+   hooks"
+  [xfs queues hooks]
+  (u/assert-spec ::pipeline-args {:xfs xfs :queues queues :hooks hooks})
+  (loop [xfs' [] [xf & rest-xfs] xfs [queue & rest-queues] queues]
+    (if xf
+      (let [_ (assert queue (str "Not enough queues (" (count queues) ") for steps in pipeline ("(count xfs) ")"))
+            pre-xf (or (:pre-xf xf) (:pre-xf hooks) identity)
+            post-xf (or (:post-xf xf) (:post-xf hooks) identity)
+            xf (merge xf {:wrapped-f (fn [{:keys [data] :as x}]
+                                       (-> (pre-xf x)
+                                           (assoc :data (try-xf xf data)
+                                                  :xfs rest-xfs)
+                                           post-xf))
+                          :queue     queue})]
+        (recur (conj xfs' xf) rest-xfs rest-queues))
+      xfs')))
 
 (defn flow
-  ([source xfs] (flow source xfs {}))
-  ([source xfs {:keys [on-start on-queue on-processed on-done n]
-                :or {on-start u/noop
-                     on-queue identity
-                     on-processed u/noop
-                     on-done u/noop}}]
-   (u/assert-spec ::flow-args {:source source :pipeline-xfs xfs})
-   (on-start)
-   (let [done (a/chan)
-         monitor (atom 0)
-         {:keys [start] :as wrapper} {:start #(swap! monitor inc)
-                                      :end   #(when (zero? (swap! monitor dec))
-                                                (on-done)
-                                                (a/close! done))
-                                      :xfs   xfs
-                                      :done  done}
-         pre-xf (map (fn [data]
-                       (start)
-                       (on-queue (assoc wrapper :data data))))
-         source-as-channel (u/channeled source pre-xf n)
-         promises {:result (promise):error (promise) :nil (promise)}]
+  "Takes elements from the in channel and supplies them to the out channel,
+   producing 1 or more outputs per input. The pipe gets assoced with every input
+   element and is used by the threads to apply the right transformation. Results
+   are unordered relative to input. By default, the to channel will be closed
+   when the from channel closes, but can be determined by the close? parameter.
+   Will stop consuming the in channel if the out channel closes."
+  [in pipe out {:keys [on-queue close?]
+                :or {on-queue u/noop
+                     close? true}}]
+  (u/assert-spec ::flow-args {:source in :pipeline-xfs pipe})
+  (let [monitor (atom 0)
+        {:keys [queue dequeue] :as x} {:queue   #(swap! monitor inc)
+                                       :dequeue #(when (zero? (swap! monitor dec))
+                                                   (when close? (a/close! out)))
+                                       :xfs     pipe
+                                       :out     out}]
 
-     (a/pipe source-as-channel (->> xfs first :queue) false)
+    (queue)
+    (a/go
+      (loop []
+        (if-let [data (a/<! in)]
+          (let [x' (assoc x :data data)]
+            (queue)
+            (when (a/>! (->> pipe first :queue) x')
+              (on-queue x)
+              (recur)))
+          (dequeue))))
 
-     (a/go-loop [collect nil]
-       (let [{:keys [status] :as x} (a/<! done)]
-         (if (some? x)
-           (recur (on-processed #(update collect status conj x) x status))
-           (doseq [[out-type p] promises]
-             (deliver p (or (get collect out-type) :done))))))
-     promises)))
+    out))
+
 
 (s/def ::f fn?)
 (s/def ::wrapped-f fn?)
 (s/def ::mult (s/nilable boolean))
-(s/def ::thread-count (comp nat-int? deref))
-(s/def ::max-thread-count pos-int?)
+(s/def ::thread-count pos-int?)
 (s/def ::queue-count pos-int?)
 (s/def ::chan #(instance? clojure.core.async.impl.channels.ManyToManyChannel %))
 (s/def ::halt ::chan)
@@ -111,12 +114,20 @@
 (s/def ::pipeline-xf (s/keys :req-un [::wrapped-f ::queue]
                              :opt-un [::mult]))
 (s/def ::pipeline-xfs (s/and (s/coll-of ::pipeline-xf) seq))
-(s/def ::threads-args (s/keys :req-un [::thread-count ::max-thread-count ::queue-count]
-                              :opt-un [::chan]))
+(s/def ::threads-args (s/keys :req-un [::thread-count ::queue-count]
+                              :opt-un [::process-hook])) ;;TODO
 
 (s/def ::pipeline-args (s/keys :req-un [::xfs ::queues]
-                               :opt-un []))
+                               :opt-un [::hooks])) ;;TODO
 
 (s/def ::source (s/or :buffered-reader u/buffered-reader?  :coll coll? :channel u/channel? :fn fn?))
 
 (s/def ::flow-args (s/keys :req-un [::source ::pipeline-xfs]))
+
+(a/go
+  (let [c (a/chan)]
+    (a/close! c)
+    (tap> :putting)
+    (tap> {:result (a/>! c 123)})
+    (tap> :done)
+    ))
