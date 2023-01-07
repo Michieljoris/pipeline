@@ -17,7 +17,7 @@
     (dotimes [thread-i thread-count]
       (a/thread
         (loop []
-          (process-hook thread-i)
+          ;; (process-hook thread-i)
           (let [[x-to-process _] (a/alts!! p-queues :priority true)]
             (when (some? x-to-process) ;;highest priority halt can be closed->thread finishes
               (let [f (-> x-to-process :xfs first :wrapped-f)
@@ -29,10 +29,16 @@
                                            :else                      :queue)
                               x' (assoc x :data  data :status status)]
                           (if (= status :queue)
-                            (do  (queue)
-                                 (a/>! (-> xfs first :queue) x'))
+                            (do
+                             (tap> {:queue x'})
+                              (queue)
+                              (a/>! (-> xfs first :queue) x')
+                              (tap> {:done-queuing x'})
+                              )
                             (a/>! out x'))))
-                      (dequeue)))
+                      (do
+                        (tap> {:dequeue x})
+                        (dequeue))))
               (recur))))
         (tap> {:thread-done thread-i})))
     {:queues queues :halt halt}))
@@ -53,19 +59,20 @@
    hooks"
   [xfs queues hooks]
   (u/assert-spec ::pipeline-args {:xfs xfs :queues queues :hooks hooks})
-  (loop [xfs' [] [xf & rest-xfs] xfs [queue & rest-queues] queues]
-    (if xf
-      (let [_ (assert queue (str "Not enough queues (" (count queues) ") for steps in pipeline ("(count xfs) ")"))
-            pre-xf (or (:pre-xf xf) (:pre-xf hooks) identity)
-            post-xf (or (:post-xf xf) (:post-xf hooks) identity)
-            xf (merge xf {:wrapped-f (fn [{:keys [data] :as x}]
-                                       (-> (pre-xf x)
-                                           (assoc :data (try-xf xf data)
-                                                  :xfs rest-xfs)
-                                           post-xf))
-                          :queue     queue})]
-        (recur (conj xfs' xf) rest-xfs rest-queues))
-      xfs')))
+  (let [xfs (map (fn [xf queue] (assoc xf :queue queue)) xfs queues)]
+    (loop [xfs' [] [xf & rest-xfs] xfs]
+      (if xf
+        (let [_ (assert (:queue xf) (str "Not enough queues (" (count queues) ") for steps in pipeline ("(count xfs) ")"))
+              pre-xf (or (:pre-xf xf) (:pre-xf hooks) identity)
+              post-xf (or (:post-xf xf) (:post-xf hooks) identity)
+              ;;TODO: fix rest of xfs don't have the :wrapped-f ....
+              xf (assoc xf :wrapped-f (fn [{:keys [data] :as x}]
+                                        (-> (pre-xf x)
+                                            (assoc :data (try-xf xf data)
+                                                   :xfs rest-xfs)
+                                            post-xf)))]
+          (recur (conj xfs' xf) rest-xfs))
+        xfs'))))
 
 (defn flow
   "Takes elements from the in channel and supplies them to the out channel,
@@ -79,22 +86,30 @@
                      close? true}}]
   (u/assert-spec ::flow-args {:source in :pipeline-xfs pipe})
   (let [monitor (atom 0)
+        _ (add-watch monitor :monitor (fn [k m o n]
+                                        (tap> {:monitor n})
+                                        ))
         {:keys [queue dequeue] :as x} {:queue   #(swap! monitor inc)
                                        :dequeue #(when (zero? (swap! monitor dec))
+                                                   (tap> {:done :!!!!})
                                                    (when close? (a/close! out)))
                                        :xfs     pipe
                                        :out     out}]
 
+    (tap> :init-queue)
     (queue)
     (a/go
       (loop []
         (if-let [data (a/<! in)]
           (let [x' (assoc x :data data)]
+            (tap> {:source-queue x})
             (queue)
             (when (a/>! (->> pipe first :queue) x')
               (on-queue x)
               (recur)))
-          (dequeue))))
+          (do
+            (tap> :dequeue-source)
+            (dequeue)))))
 
     out))
 

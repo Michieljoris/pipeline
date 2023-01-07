@@ -50,16 +50,16 @@
 
 (u/assert-spec ::p/source (io/reader "readme.org"))
 
-(let [s (u/channeled (io/reader "readme.org") nil 3)]
-  (a/go-loop []
-   (let [r (a/<! s)]
-     (tap> {:r r})
-     (when r (recur))
-       )
+;; (let [s (u/channeled (io/reader "readme.org") nil 3)]
+;;   (a/go-loop []
+;;    (let [r (a/<! s)]
+;;      (tap> {:r r})
+;;      (when r (recur))
+;;        )
 
-      )
-  
-  )
+;;       )
+
+;;   )
 
 
 (comment
@@ -68,7 +68,7 @@
   (a/close! halt))
 
 (defn pre-xf [{:keys [data xfs] :as x}]
-  ;; (tap> {:pre-xf x})
+  (tap> {:pre-xf x})
   ((:log-count (first xfs) #(do)))
   (-> (update x :transforms (fnil conj []) data)
       (stat/mark :xf-start-time))
@@ -83,7 +83,7 @@
   x)
 
 (defn post-xf [x]
-  ;; (tap> {:post-xf x})
+  (tap> {:post-xf x})
   (-> (stat/mark x :xf-end-time) xf-stats))
 
 (def xfs [{:step 1
@@ -148,7 +148,7 @@
        _            (stat/init-stats [] 60 halt)
        _            (tap> :==================================================)
        start-time   (stat/now)
-       input-size   1000
+       input-size   1
        log          tap>
        log          (constantly nil)
        max-thread-count 5
@@ -158,24 +158,24 @@
                    (update-collect))
        on-error  (fn [update-collect x]
                    (update-collect))
-       source    (fn [] (a/to-chan! (map #(hash-map :id %) (range input-size))))
+       source    (a/to-chan! (map #(hash-map :id %) (range input-size)))
        thread-hook (partial u/poll-thread-count thread-count halt)
        {:keys [queues halt]}  (p/threads max-thread-count (count xfs) thread-hook)
        _ (def halt halt)
-       pipeline  (p/pipeline xfs queues {
-                                         :pre-xf pre-xf
-                                         ;; :post-xf post-xf
-                                         })
+       pipe (p/pipe xfs queues {
+                                :pre-xf pre-xf
+                                :post-xf post-xf
+                                })
 
 
-       out (p/flow source pipeline {:n            1
-                                    :on-start     (fn []
-                                                    (tap> :starting-pipeline!!!))
-                                    :on-first-queue     #(assoc % :queued-time (stat/now)) ;;first queueing of source item
+       out (a/chan)
+       out (p/flow source pipe out {:on-start     (fn []
+                                                        (tap> :starting-pipeline!!!))
+                                        :on-first-queue     #(assoc % :queued-time (stat/now)) ;;first queueing of source item
 
-                                    :on-done      (fn [] ;;all source items processed
-                                                    (a/close! halt)
-                                                    (tap> :done!!!!!!))})
+                                        :on-done      (fn [] ;;all source items processed
+                                                        (a/close! halt)
+                                                        (tap> :done!!!!!!))})
        on-processed (fn [update-collect x status]
                       (case status
                         :result (on-result update-collect x)

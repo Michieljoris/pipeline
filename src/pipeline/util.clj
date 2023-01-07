@@ -85,9 +85,9 @@
           (deliver p (or (get collect out-type) :done)))))
     promises))
 
-(defn discard-out [out]
+(defn consume-channel [c]
   (a/go-loop []
-    (when (a/<! out)
+    (when (a/<! c)
       (recur))))
 
 ;; (poll-thread-count thread-i thread-count halt)
