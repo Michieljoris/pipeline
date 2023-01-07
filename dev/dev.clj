@@ -7,15 +7,14 @@
    [pipeline.stat :as stat]
    [pipeline.util :as u]
    [clojure.string :as str]
-   [clojure.data.csv :as csv])
+   [clojure.data.csv :as csv]
+   [taoensso.timbre :as log])
   )
 
 
-;; TODO: log every so many seconds, but only if there's something to log
 ;; TODO: clean up dev
 ;; TODO: write readme
 ;; TODO: add tests
-
 ;; TODO: Calculate ratio of blocking vs working and log as job is running and take blocking quotient into account!!!!
 ;; TODO: Adjust number of threads on the fly!!!!
 ;; TODO: auto adjust thread count to max throughput, minimal threads, then set to 80% for example
@@ -26,6 +25,36 @@
  ;; TODO: inspect all current saigo pipelines, and document, and see if they can use submitter
  ;; TODO: add throttler
 ;; TODO: test changing pipe in wrapper
+;; DONE: log every so many seconds, but only if there's something to log
+
+(comment
+  (let [start-time   (stat/now)
+        source (u/channeled (map #(hash-map :id %) (range 5)) 2)
+        source (u/channeled (io/reader "resources/test.csv") 3)
+        row->map (u/csv-xf source 1000)
+        xfs [{:xf row->map
+              :log-count (u/log-count tap> "Processed first xf" 20)}
+             {:xf #(assoc % :step-1 true)}
+             {:xf #(assoc % :step-2 true)}]
+        thread-count 10
+        wrapper (fn [update-x {:keys [pipe data] :as x}]
+                  ((:log-count pipe #(do)))
+                  (-> (update x :transforms (fnil conj []) data)
+                      update-x))
+        halt (a/chan)
+        thread-hook (fn [thread-i] (tap> {:thread-i thread-i}))
+        thread-hook #(u/block-on-pred % (atom 5) > halt 1000)
+        {:keys [queue]} (p/threads thread-count (count xfs) {:wrapper wrapper
+                                                                  :thread-hook thread-hook
+                                                                  :halt halt})
+        out (p/flow source (p/as-pipe xfs) queue)]
+
+    (doseq [[status p] (u/out->promises out)]
+      (future (tap> {status    (if (keyword? @p) @p @p)
+                     :duration (/ (- (stat/now) start-time) 1000.0)})))
+    ))
+
+
 
 
  ;; DONE: implement xf csv
@@ -103,8 +132,8 @@
                    (assoc ret :split 3)]
                   ret
                   ))
-           :log-count (u/log-count "Processed first xf" 20)
-           ;; :mult true
+           :log-count (u/log-count tap> "Processed first xf" 20)
+           :mult true
            }
           {:xf (fn [data]
                 ;; (tap> {:step2 data})
@@ -123,7 +152,10 @@
                 (update data :step (fnil conj []) 2))}
           ])
 
+(u/combine-xfs xfs)
+((:xf (first (u/combine-xfs xfs))) {:id 1})
 ;; (p/as-pipe xfs 10)
+(u/combine-xfs xfs)
 
 (def thread-count (atom 5))
 
@@ -145,21 +177,7 @@
 
 
 (comment
-  (let [start-time   (stat/now)
-        source (u/channeled (map #(hash-map :id %) (range 5)) 2)
-        source (u/channeled (io/reader "resources/test.csv") 3)
-        row->map (u/csv-xf source 1000)
-        xfs [{:xf row->map}
-             {:xf #(assoc % :step-1 true)}
-             {:xf #(assoc % :step-2 true)}]
-        thread-count 10
-        {:keys [queue halt]} (p/threads thread-count (count xfs) nil)
-        out (p/flow source (p/as-pipe xfs) queue)]
 
-    (doseq [[status p] (u/out->promises out)]
-      (future (tap> {status    (if (keyword? @p) @p @p)
-                     :duration (/ (- (stat/now) start-time) 1000.0)})))
-  )
 
     ;; (a/go-loop []
     ;;   (when-let [res (a/<! out)]

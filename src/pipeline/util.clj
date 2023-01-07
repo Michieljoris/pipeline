@@ -12,24 +12,33 @@
 
 (defn log-count
   "Returns a function that will log msg every n invocations."
-  [msg n]
-  (let [cnt (atom 0)]
+  [log msg n]
+  (let [cnt (atom nil)]
     (fn []
-      (let [new-cnt (dec (swap! cnt inc))]
+      (let [new-cnt (dec (swap! cnt (fnil inc 0)))]
         (when (zero? (mod new-cnt n))
-          (tap> {:count new-cnt})
-          (log/info msg :count new-cnt))))))
+          (log [msg :count new-cnt]))))))
+
+(defn log-period [log msg ms]
+  (let [t (atom (System/currentTimeMillis))
+        cnt (atom 0)]
+    (fn []
+      (let [old-t @t
+            new-t (System/currentTimeMillis)]
+        (when (> (- new-t old-t) ms)
+          (log [msg :count @cnt])
+          (reset! t new-t))
+        (swap! cnt inc)))))
 
 (defn combine-xfs
    "TODO"
   [xfs]
   (let [{:keys [last-xf xfs]}
-        (reduce (fn [{:keys [last-xf] :as acc}
-                     {:keys [f] :as xf}]
+        (reduce (fn [{:keys [last-xf] :as acc} xf]
                   (if (:mult last-xf)
                     (-> (update acc :xfs conj last-xf)
                         (assoc :last-xf xf))
-                    (assoc acc :last-xf (update xf :f #(comp % (:f last-xf))))))
+                    (assoc acc :last-xf (update xf :xf #(comp % (:xf last-xf))))))
                 {:last-xf (first xfs)
                  :xfs     []}
                 (rest xfs))]

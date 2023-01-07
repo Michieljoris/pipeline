@@ -46,12 +46,11 @@
    the queues and a halt channel, that when closed stops all threads. The
    thread-hook function gets called with the thread number every time the
    thread starts any new work."
-  [thread-count queue-count {:keys [thread-hook wrapper]
-                             :or {thread-hook u/noop wrapper default-wrapper}}]
+  [thread-count queue-count {:keys [thread-hook wrapper halt]
+                             :or {thread-hook u/noop wrapper default-wrapper halt (a/chan)}}]
   (u/assert-spec ::threads-args {:thread-count thread-count :queue-count queue-count
                                  :thread-hook thread-hook})
-  (let [halt (a/chan)
-        queues (->> (repeatedly a/chan) (take queue-count) vec)
+  (let [queues (->> (repeatedly a/chan) (take queue-count) vec)
         p-queues (reverse (into [halt] queues))]
     (dotimes [thread-i thread-count]
       (a/thread
