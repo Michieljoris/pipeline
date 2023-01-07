@@ -38,27 +38,19 @@
             (when x ;;highest priority halt can be closed->thread finishes
               (let [{:keys [datas pipe out check-in check-out] :as updated-x} (wrapper update-x x)
                     queue (get queues (:i pipe))]
-                ;; (tap> {:updated-x updated-x :queue queues})
                 (a/go (doseq [data datas]
                         (let [status (cond (instance? Throwable data) :error
                                            (empty? pipe)              :result
                                            (nil? data)                :nil
                                            :else                      :queue)
                               x-to-queue (assoc updated-x :data  data :status status :datas nil)]
-                          ;; (tap> {:x'''???????? x-to-queue
-                          ;;        :queue queue})
                           (if (= status :queue)
                             (do
                               (check-in)
-                              (a/>! queue x-to-queue)
-                              (tap> {:done-queuing x-to-queue})
-                              )
+                              (a/>! queue x-to-queue))
                             (a/>! out x-to-queue))))
-                      (do
-                        (tap> {:dequeue x})
-                        (check-out))))
-              (recur))))
-        (tap> {:thread-done thread-i})))
+                      (check-out)))
+              (recur))))))
     {:queue (first queues) :halt halt}))
 
 (defn as-pipe
@@ -76,28 +68,17 @@
   [in pipe out worker {:keys [close?] :or {close? true}}]
   ;; (u/assert-spec ::flow-args {:source in :pipeline-xfs pipe})
   (let [monitor (atom 0)
-        _ (add-watch monitor :monitor (fn [k m o n]
-                                        (tap> {:monitor n})
-                                        ))
         check-in #(swap! monitor inc)
         check-out #(when (zero? (swap! monitor dec))
-                   (tap> {:done :!!!!})
                    (when close? (a/close! out)))]
-
-    (tap> :init-queue)
     (check-in)
     (a/go
       (loop []
         (if-let [data (a/<! in)]
           (let [x {:data data :check-in check-in :check-out check-out :out out :pipe pipe}]
-            (tap> {:source-queue x})
             (check-in)
-            (tap> {:worker worker})
             (when (a/>! worker x) (recur)))
-          (do
-            (tap> :dequeue-source)
-            (check-out)))))
-
+          (check-out))))
     out))
 
 

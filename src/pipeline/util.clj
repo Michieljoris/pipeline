@@ -79,7 +79,6 @@
 (defn out->promises [out on-processed]
   (let [ promises {:result (promise):error (promise) :nil (promise)}]
     (a/go-loop [collect nil]
-      (tap> {:collect collect})
       (if-let [{:keys [status] :as x} (a/<! out)]
         (recur (on-processed #(update collect status conj x) x status))
         (doseq [[out-type p] promises]

@@ -165,7 +165,6 @@
                                                      (a/close! halt)
                                                      (tap> :done!!!!!!))})
        on-processed (fn [update-collect x status]
-                      (tap> {:on-processed x :status status})
                       (case status
                         :result (on-result update-collect x)
                         :error  (on-error update-collect x)
