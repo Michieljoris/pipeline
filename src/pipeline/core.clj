@@ -3,47 +3,7 @@
             [clojure.spec.alpha :as s]
             [pipeline.util :as u]))
 
-(defn threads
-  "Starts up thread-count threads, and creates queue-count queue channels. Each
-   thread is set up to process data as put on the queues. Returns a map with the
-   queues and a halt channel, that when closed stops all threads. The
-   process-hook function gets called with the thread number every time the
-   thread starts any work."
-  [thread-count queue-count process-hook]
-  (u/assert-spec ::threads-args {:thread-count thread-count :queue-count queue-count :process-hook process-hook})
-  (let [halt (a/chan)
-        queues (->> (repeatedly a/chan) (take queue-count))
-        p-queues (reverse (into [halt] queues))]
-    (dotimes [thread-i thread-count]
-      (a/thread
-        (loop []
-          ;; (process-hook thread-i)
-          (let [[x-to-process _] (a/alts!! p-queues :priority true)]
-            (when (some? x-to-process) ;;highest priority halt can be closed->thread finishes
-              (let [f (-> x-to-process :xfs first :wrapped-f)
-                    {:keys [xfs out queue dequeue data] :as x} (f x-to-process)]
-                (a/go (doseq [data data]
-                        (let [status (cond (instance? Throwable data) :error
-                                           (empty? xfs)               :result
-                                           (nil? data)                :nil
-                                           :else                      :queue)
-                              x' (assoc x :data  data :status status)]
-                          (if (= status :queue)
-                            (do
-                             (tap> {:queue x'})
-                              (queue)
-                              (a/>! (-> xfs first :queue) x')
-                              (tap> {:done-queuing x'})
-                              )
-                            (a/>! out x'))))
-                      (do
-                        (tap> {:dequeue x})
-                        (dequeue))))
-              (recur))))
-        (tap> {:thread-done thread-i})))
-    {:queues queues :halt halt}))
-
-(defn- try-xf [{:keys [mult f]} data]
+(defn apply-pipe [{:keys [f mult]} data]
   (try
     (let [result (f data)]
       (if mult
@@ -51,28 +11,60 @@
         [result]))
     (catch Throwable t [t])))
 
-(defn pipe
-   "Takes a collection of maps (each defining a transformation) and queues (as
-   returned by the threads fn) and returns a pipe that can be passed to the flow
-   fn, or assigned to an input element in a pre-xf or post-xf hook. A pipe is
-   the list of transformation functions with assigned queues and potential
-   hooks"
-  [xfs queues hooks]
-  (u/assert-spec ::pipeline-args {:xfs xfs :queues queues :hooks hooks})
-  (let [xfs (map (fn [xf queue] (assoc xf :queue queue)) xfs queues)]
-    (loop [xfs' [] [xf & rest-xfs] xfs]
-      (if xf
-        (let [_ (assert (:queue xf) (str "Not enough queues (" (count queues) ") for steps in pipeline ("(count xfs) ")"))
-              pre-xf (or (:pre-xf xf) (:pre-xf hooks) identity)
-              post-xf (or (:post-xf xf) (:post-xf hooks) identity)
-              ;;TODO: fix rest of xfs don't have the :wrapped-f ....
-              xf (assoc xf :wrapped-f (fn [{:keys [data] :as x}]
-                                        (-> (pre-xf x)
-                                            (assoc :data (try-xf xf data)
-                                                   :xfs rest-xfs)
-                                            post-xf)))]
-          (recur (conj xfs' xf) rest-xfs))
-        xfs'))))
+(defn- update-x [{:keys [pipe data] :as x}]
+  (assoc x :datas (apply-pipe pipe data)))
+
+(defn default-wrapper [update-x {:keys [pipe] :as x}]
+  (assoc (update-x x) :pipe (:next pipe)))
+
+(defn threads
+  "Starts up thread-count threads, and creates queue-count queue channels. Each
+   thread is set up to process data as put on the queues. Returns a map with the
+   queues and a halt channel, that when closed stops all threads. The
+   process-hook function gets called with the thread number every time the
+   thread starts any work."
+  [thread-count queue-count {:keys [process-hook wrapper]
+                             :or {process-hook u/noop
+                                  wrapper default-wrapper}}]
+  (u/assert-spec ::threads-args {:thread-count thread-count :queue-count queue-count :process-hook process-hook})
+  (let [halt (a/chan)
+        queues (->> (repeatedly a/chan) (take queue-count) vec)
+        p-queues (reverse (into [halt] queues))]
+    (dotimes [thread-i thread-count]
+      (a/thread
+        (loop []
+          (process-hook thread-i)
+          (let [[x _] (a/alts!! p-queues :priority true)]
+            (when x ;;highest priority halt can be closed->thread finishes
+              (let [{:keys [datas pipe out check-in check-out] :as updated-x} (wrapper update-x x)
+                    queue (get queues (:i pipe))]
+                ;; (tap> {:updated-x updated-x :queue queues})
+                (a/go (doseq [data datas]
+                        (let [status (cond (instance? Throwable data) :error
+                                           (empty? pipe)              :result
+                                           (nil? data)                :nil
+                                           :else                      :queue)
+                              x-to-queue (assoc updated-x :data  data :status status :datas nil)]
+                          ;; (tap> {:x'''???????? x-to-queue
+                          ;;        :queue queue})
+                          (if (= status :queue)
+                            (do
+                              (check-in)
+                              (a/>! queue x-to-queue)
+                              (tap> {:done-queuing x-to-queue})
+                              )
+                            (a/>! out x-to-queue))))
+                      (do
+                        (tap> {:dequeue x})
+                        (check-out))))
+              (recur))))
+        (tap> {:thread-done thread-i})))
+    {:queue (first queues) :halt halt}))
+
+(defn as-pipe
+  ([xfs] (as-pipe xfs 0))
+  ([xfs offset]
+   (->> xfs (map-indexed #(assoc %2 :i (+ offset %1))) u/linked-list)))
 
 (defn flow
   "Takes elements from the in channel and supplies them to the out channel,
@@ -81,35 +73,30 @@
    are unordered relative to input. By default, the to channel will be closed
    when the from channel closes, but can be determined by the close? parameter.
    Will stop consuming the in channel if the out channel closes."
-  [in pipe out {:keys [on-queue close?]
-                :or {on-queue u/noop
-                     close? true}}]
-  (u/assert-spec ::flow-args {:source in :pipeline-xfs pipe})
+  [in pipe out worker {:keys [close?] :or {close? true}}]
+  ;; (u/assert-spec ::flow-args {:source in :pipeline-xfs pipe})
   (let [monitor (atom 0)
         _ (add-watch monitor :monitor (fn [k m o n]
                                         (tap> {:monitor n})
                                         ))
-        {:keys [queue dequeue] :as x} {:queue   #(swap! monitor inc)
-                                       :dequeue #(when (zero? (swap! monitor dec))
-                                                   (tap> {:done :!!!!})
-                                                   (when close? (a/close! out)))
-                                       :xfs     pipe
-                                       :out     out}]
+        check-in #(swap! monitor inc)
+        check-out #(when (zero? (swap! monitor dec))
+                   (tap> {:done :!!!!})
+                   (when close? (a/close! out)))]
 
     (tap> :init-queue)
-    (queue)
+    (check-in)
     (a/go
       (loop []
         (if-let [data (a/<! in)]
-          (let [x' (assoc x :data data)]
+          (let [x {:data data :check-in check-in :check-out check-out :out out :pipe pipe}]
             (tap> {:source-queue x})
-            (queue)
-            (when (a/>! (->> pipe first :queue) x')
-              (on-queue x)
-              (recur)))
+            (check-in)
+            (tap> {:worker worker})
+            (when (a/>! worker x) (recur)))
           (do
             (tap> :dequeue-source)
-            (dequeue)))))
+            (check-out)))))
 
     out))
 
@@ -139,10 +126,34 @@
 
 (s/def ::flow-args (s/keys :req-un [::source ::pipeline-xfs]))
 
-(a/go
-  (let [c (a/chan)]
-    (a/close! c)
-    (tap> :putting)
-    (tap> {:result (a/>! c 123)})
-    (tap> :done)
-    ))
+;; (a/go
+;;   (let [c (a/chan)]
+;;     (a/close! c)
+;;     (tap> :putting)
+;;     (tap> {:result (a/>! c 123)})
+;;     (tap> :done)
+;;     ))
+
+(comment
+  (defn pipe
+    "Takes a collection of maps (each defining a transformation) and queues (as
+   returned by the threads fn) and returns a pipe that can be passed to the flow
+   fn, or assigned to an input element in a pre-xf or post-xf hook. A pipe is
+   the list of transformation functions with assigned queues and potential
+   hooks"
+    [xfs queues hooks]
+    (u/assert-spec ::pipeline-args {:xfs xfs :queues queues :hooks hooks})
+    (let [xfs (map (fn [xf queue] (assoc xf :queue queue)) xfs queues)]
+      (loop [xfs' [] [xf & rest-xfs] xfs]
+        (if xf
+          (let [_ (assert (:queue xf) (str "Not enough queues (" (count queues) ") for steps in pipeline ("(count xfs) ")"))
+                pre-xf (or (:pre-xf xf) (:pre-xf hooks) identity)
+                post-xf (or (:post-xf xf) (:post-xf hooks) identity)
+                ;;TODO: fix rest of xfs don't have the :wrapped-f ....
+                xf (assoc xf :wrapped-f (fn [{:keys [data] :as x}]
+                                          (-> (pre-xf x)
+                                              (assoc :data (try-xf xf data)
+                                                     :xfs rest-xfs)
+                                              post-xf)))]
+            (recur (conj xfs' xf) rest-xfs))
+          xfs')))))

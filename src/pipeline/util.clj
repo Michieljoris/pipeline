@@ -79,6 +79,7 @@
 (defn out->promises [out on-processed]
   (let [ promises {:result (promise):error (promise) :nil (promise)}]
     (a/go-loop [collect nil]
+      (tap> {:collect collect})
       (if-let [{:keys [status] :as x} (a/<! out)]
         (recur (on-processed #(update collect status conj x) x status))
         (doseq [[out-type p] promises]
@@ -89,6 +90,11 @@
   (a/go-loop []
     (when (a/<! c)
       (recur))))
+
+(defn linked-list [xs]
+   (reduce (fn [ll x]
+             (assoc x :next ll))
+           (reverse xs)))
 
 ;; (poll-thread-count thread-i thread-count halt)
 

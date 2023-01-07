@@ -86,8 +86,7 @@
   (tap> {:post-xf x})
   (-> (stat/mark x :xf-end-time) xf-stats))
 
-(def xfs [{:step 1
-           :f (fn [data]
+(def xfs [{:f (fn [data]
                 ;; (tap> {:step1 data})
                 (let [ret (update data :step (fnil conj []) 0)]
                   (test/rand-work 20 10)
@@ -99,8 +98,7 @@
            :log-count (u/log-count "Processed first xf" 20)
            ;; :mult true
            }
-          {:step 2
-           :f (fn [data]
+          {:f (fn [data]
                 ;; (tap> {:step2 data})
                 (test/rand-sleep 100 50)
                 (if (= 0 (:id data))
@@ -109,8 +107,7 @@
                   ;; nil
                   (update data :step (fnil conj []) 1)
                   (update data :step (fnil conj []) 1)))}
-          {:step 3
-           :f (fn [data]
+          {:f (fn [data]
                 ;; (tap> {:step3 data})
                 (test/rand-work 300 10)
                 ;; (update data :step (fnil conj []) 2)
@@ -118,9 +115,9 @@
                 (update data :step (fnil conj []) 2))}
           ])
 
+(p/as-pipe xfs 10)
 
 (def thread-count (atom 5))
-
 
 (comment
   (let [source   (fn [] (a/to-chan! (map #(hash-map :id %) (range 50))))
@@ -148,35 +145,27 @@
        _            (stat/init-stats [] 60 halt)
        _            (tap> :==================================================)
        start-time   (stat/now)
-       input-size   1
+       input-size   5
        log          tap>
        log          (constantly nil)
        max-thread-count 5
 
        on-result (fn [update-collect x]
-                   (stat/add-stat :result (- (stat/now) (:queued-time x)))
+                   ;; (stat/add-stat :result (- (stat/now) (:queued-time x)))
                    (update-collect))
        on-error  (fn [update-collect x]
                    (update-collect))
        source    (a/to-chan! (map #(hash-map :id %) (range input-size)))
        thread-hook (partial u/poll-thread-count thread-count halt)
-       {:keys [queues halt]}  (p/threads max-thread-count (count xfs) thread-hook)
+       {:keys [queue halt]}  (p/threads max-thread-count (count xfs) nil)
        _ (def halt halt)
-       pipe (p/pipe xfs queues {
-                                :pre-xf pre-xf
-                                :post-xf post-xf
-                                })
-
-
+       pipe (p/as-pipe xfs)
        out (a/chan)
-       out (p/flow source pipe out {:on-start     (fn []
-                                                        (tap> :starting-pipeline!!!))
-                                        :on-first-queue     #(assoc % :queued-time (stat/now)) ;;first queueing of source item
-
-                                        :on-done      (fn [] ;;all source items processed
-                                                        (a/close! halt)
-                                                        (tap> :done!!!!!!))})
+       out (p/flow source pipe out queue {:on-done (fn [] ;;all source items processed
+                                                     (a/close! halt)
+                                                     (tap> :done!!!!!!))})
        on-processed (fn [update-collect x status]
+                      (tap> {:on-processed x :status status})
                       (case status
                         :result (on-result update-collect x)
                         :error  (on-error update-collect x)
