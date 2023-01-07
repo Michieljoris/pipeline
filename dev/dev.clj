@@ -1,31 +1,38 @@
 (ns dev
- (:require
-  [test :as test]
-  [clojure.core.async :as a]
-  [clojure.java.io :as io]
-  [pipeline.core :as p]
-  [pipeline.stat :as stat]
-  [pipeline.util :as u])
+  (:require
+   [test :as test]
+   [clojure.core.async :as a]
+   [clojure.java.io :as io]
+   [pipeline.core :as p]
+   [pipeline.stat :as stat]
+   [pipeline.util :as u]
+   [clojure.string :as str]
+   [clojure.data.csv :as csv])
   )
+
+
+;; TODO: log every so many seconds, but only if there's something to log
+;; TODO: clean up dev
+;; TODO: write readme
+;; TODO: add tests
 
 ;; TODO: Calculate ratio of blocking vs working and log as job is running and take blocking quotient into account!!!!
 ;; TODO: Adjust number of threads on the fly!!!!
 ;; TODO: auto adjust thread count to max throughput, minimal threads, then set to 80% for example
 ;; TODO: log estimate on likely duration of job
  ;; TODO: merge xfs if they indicate they don't return multiple results
-;; TODO: log every so many seconds, but only if there's something to log
  ;; TODO: test with real pipeline.
  ;; TODO: benchmark!!!!
  ;; TODO: inspect all current saigo pipelines, and document, and see if they can use submitter
  ;; TODO: add throttler
- ;; TODO: what to do if (:count xfs) is 0?
- ;; TODO: expose xfs itself to xf fns, so an x can be chucked onto a different pipeline
- ;; TODO: implement xf csv
+;; TODO: test changing pipe in wrapper
+
+
+ ;; DONE: implement xf csv
  ;;   "Converts rows from a CSV file with an initial header row into a
  ;;   lazy seq of maps with the header row keys (as keywords). The 0-arg
  ;;   version returns a transducer."
-
-
+ ;; DONE: what to do if (:count xfs) is 0? -> spec fails
 ;; DONE: how about the results from multiple datasets?
 ;; Each are written to their one out channel as returned from the flow fn
  ;; DONE replace all stat calls with macros that can be noop when env var is set?!?!
@@ -87,7 +94,7 @@
   (tap> {:post-xf x})
   (-> (stat/mark x :xf-end-time) xf-stats))
 
-(def xfs [{:f (fn [data]
+(def xfs [{:xf (fn [data]
                 ;; (tap> {:step1 data})
                 (let [ret (update data :step (fnil conj []) 0)]
                   (test/rand-work 20 10)
@@ -99,7 +106,7 @@
            :log-count (u/log-count "Processed first xf" 20)
            ;; :mult true
            }
-          {:f (fn [data]
+          {:xf (fn [data]
                 ;; (tap> {:step2 data})
                 (test/rand-sleep 100 50)
                 (if (= 0 (:id data))
@@ -108,7 +115,7 @@
                   ;; nil
                   (update data :step (fnil conj []) 1)
                   (update data :step (fnil conj []) 1)))}
-          {:f (fn [data]
+          {:xf (fn [data]
                 ;; (tap> {:step3 data})
                 (test/rand-work 300 10)
                 ;; (update data :step (fnil conj []) 2)
@@ -116,21 +123,49 @@
                 (update data :step (fnil conj []) 2))}
           ])
 
-(p/as-pipe xfs 10)
+;; (p/as-pipe xfs 10)
 
 (def thread-count (atom 5))
 
+(defn read-csv
+  [file-name]
+  (with-open [reader (io/reader file-name)]
+    (doall
+     (csv/read-csv reader))))
+
+(defn csv->maps [csv]
+  (let [columns (map keyword (first csv))
+        members (rest csv)]
+    (map #(zipmap columns %) members) ))
+
+(read-csv "resources/test.csv")
+
+
+
+
+
 (comment
-  (let [source   (fn [] (a/to-chan! (map #(hash-map :id %) (range 50))))
-        xfs [{:f #(assoc % :step-1 true)}
-             {:f #(assoc % :step-2 true)}]
-        halt (a/chan)
-        pipeline (p/pipeline xfs (p/threads 10 (count xfs) halt))
-        {:keys [result]} (p/flow source pipeline {:n 3
-                                                  :on-processed (fn [update-collect x status]
-                                                                  (update-collect))})]
-    (map :data @result)
+  (let [start-time   (stat/now)
+        source (u/channeled (map #(hash-map :id %) (range 5)) 2)
+        source (u/channeled (io/reader "resources/test.csv") 3)
+        row->map (u/csv-xf source 1000)
+        xfs [{:xf row->map}
+             {:xf #(assoc % :step-1 true)}
+             {:xf #(assoc % :step-2 true)}]
+        thread-count 10
+        {:keys [queue halt]} (p/threads thread-count (count xfs) nil)
+        out (p/flow source (p/as-pipe xfs) queue)]
+
+    (doseq [[status p] (u/out->promises out)]
+      (future (tap> {status    (if (keyword? @p) @p @p)
+                     :duration (/ (- (stat/now) start-time) 1000.0)})))
   )
+
+    ;; (a/go-loop []
+    ;;   (when-let [res (a/<! out)]
+    ;;     (tap> res)
+    ;;     (recur)))
+
 
   (stat/stats :xf)
   (stat/stats :xf-0)
@@ -146,7 +181,7 @@
        _            (stat/init-stats [] 60 halt)
        _            (tap> :==================================================)
        start-time   (stat/now)
-       input-size   5
+       input-size   10
        log          tap>
        log          (constantly nil)
        max-thread-count 5
@@ -157,7 +192,7 @@
        on-error  (fn [update-collect x]
                    (update-collect))
        source    (a/to-chan! (map #(hash-map :id %) (range input-size)))
-       thread-hook (partial u/poll-thread-count thread-count halt)
+       ;; thread-hook (partial u/poll-thread-count thread-count halt)
        {:keys [queue halt]}  (p/threads max-thread-count (count xfs) nil)
        _ (def halt halt)
        pipe (p/as-pipe xfs)
@@ -166,6 +201,7 @@
                                                      (a/close! halt)
                                                      (tap> :done!!!!!!))})
        on-processed (fn [update-collect x status]
+                      (update-collect)
                       (case status
                         :result (on-result update-collect x)
                         :error  (on-error update-collect x)

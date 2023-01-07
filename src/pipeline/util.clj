@@ -2,6 +2,7 @@
   (:require [clojure.core.async :as a]
             [clojure.core.async.impl.protocols :as async-impl]
             [clojure.spec.alpha :as s]
+            [clojure.string :as str]
             [taoensso.timbre :as log]))
 
 (def noop (constantly nil))
@@ -9,7 +10,9 @@
 (defn assert-spec [spec data]
   (assert (s/valid? spec data) (s/explain-str spec data)))
 
-(defn log-count [msg n]
+(defn log-count
+  "Returns a function that will log msg every n invocations."
+  [msg n]
   (let [cnt (atom 0)]
     (fn []
       (let [new-cnt (dec (swap! cnt inc))]
@@ -17,7 +20,9 @@
           (tap> {:count new-cnt})
           (log/info msg :count new-cnt))))))
 
-(defn combine-xfs [xfs]
+(defn combine-xfs
+   "TODO"
+  [xfs]
   (let [{:keys [last-xf xfs]}
         (reduce (fn [{:keys [last-xf] :as acc}
                      {:keys [f] :as xf}]
@@ -82,14 +87,17 @@
           (recur))))))
 
 
-(defn out->promises [out on-processed]
-  (let [ promises {:result (promise):error (promise) :nil (promise)}]
-    (a/go-loop [collect nil]
-      (if-let [{:keys [status] :as x} (a/<! out)]
-        (recur (on-processed #(update collect status conj x) x status))
-        (doseq [[out-type p] promises]
-          (deliver p (or (get collect out-type) :done)))))
-    promises))
+(defn out->promises
+   "TODO"
+  ([out] (out->promises out (fn [update-collect _x _status] (update-collect))))
+  ([out on-processed]
+   (let [ promises {:result (promise):error (promise) :nil (promise)}]
+     (a/go-loop [collect nil]
+       (if-let [{:keys [status] :as x} (a/<! out)]
+         (recur (on-processed #(update collect status conj x) x status))
+         (doseq [[out-type p] promises]
+           (deliver p (or (get collect out-type) :done)))))
+     promises)))
 
 (defn >!!null
   "Reads and discards all values read from c"
@@ -105,31 +113,15 @@
   (reduce (fn [ll x]
             (assoc x :next ll))
           (reverse xs)))
-(comment
-  (defn csv-map
-    "Converts rows from a CSV file with an initial header row into a
-   lazy seq of maps with the header row keys (as keywords). The 0-arg
-   version returns a transducer."
-    ([]
-     (fn [xf]
-       (let [hdr (volatile! nil)]
-         (fn
-           ([]
-            (tap> :empty)
-            (xf))
-           ([result]
-            (tap> {:result result})
-            (xf result))
-           ([result input]
-            (tap> {:result result
-                   :input input})
-            (let [in-split (str/split input #",")]
-              (if-let [h @hdr]
-                (xf result (zipmap h in-split))
-                (do (vreset! hdr (map keyword in-split))
-                    result))))))))
 
-    ([coll]
-     (let [[header & records] coll
-           hdr (map keyword (str/split header #","))]
-       (map #(zipmap hdr (str/split % #",")) records)))))
+(defn csv-xf
+  "Takes a csv-source channel, reads the first (headers) element and returns a
+   function that will take row elements and returns maps with the headers as
+   keywords. Throws is channel is closed or is blocked for ms"
+  [csv-source ms]
+  (if-let [[header-str _] (a/alts!! [csv-source (a/timeout ms)])]
+    (let [headers (map keyword (str/split header-str #","))]
+      (fn [row]
+        (let [columns (str/split row #",")]
+          (zipmap headers columns))))
+    (throw (ex-info "No input from csv-source" {}))))
