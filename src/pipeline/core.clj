@@ -18,7 +18,7 @@
     (dotimes [thread-i max-thread-count]
       (a/thread
         (loop []
-          (tap> {:thread-i thread-i})
+          ;; (tap> {:thread-i thread-i})
           (poll-thread-count thread-i thread-count halt)
           (let [[x-to-process _] (a/alts!! p-queues :priority true)]
             (when (some? x-to-process)

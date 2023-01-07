@@ -145,7 +145,7 @@
         _            (stat/init-stats [] 60 halt)
         _            (tap> :==================================================)
         start-time   (stat/now)
-        input-size   1000
+        input-size   10
         log          tap>
         log          (constantly nil)
         max-thread-count 5
