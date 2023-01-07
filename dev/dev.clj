@@ -11,7 +11,6 @@
 ;; TODO: Calculate ratio of blocking vs working and log as job is running and take blocking quotient into account!!!!
 ;; TODO: Adjust number of threads on the fly!!!!
 ;; TODO: auto adjust thread count to max throughput, minimal threads, then set to 80% for example
-;; TODO: how about the results from multiple datasets? That should be returned on done!
 ;; TODO: log estimate on likely duration of job
  ;; TODO: merge xfs if they indicate they don't return multiple results
 ;; TODO: log every so many seconds, but only if there's something to log
@@ -27,6 +26,8 @@
  ;;   version returns a transducer."
 
 
+;; DONE: how about the results from multiple datasets?
+;; Each are written to their one out channel as returned from the flow fn
  ;; DONE replace all stat calls with macros that can be noop when env var is set?!?!
  ;; DONE log-count: "A transducer which logs a count of records it's seen with msg every n records."
  ;; DONE ex-handler???

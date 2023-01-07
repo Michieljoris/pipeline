@@ -17,6 +17,24 @@
 (defn default-wrapper [update-x {:keys [pipe] :as x}]
   (assoc (update-x x) :pipe (:next pipe)))
 
+(defn process-x [{:keys [out check-in check-out] :as x} wrapper queues]
+  (let [{:keys [data pipe] :as updated-x} (wrapper update-x x)
+        queue (get queues (:i pipe))]
+    (a/go (doseq [data data]
+            (let [status (cond (instance? Throwable data) :error
+                               (empty? pipe)              :result
+                               (nil? data)                :nil
+                               :else                      :queue)
+                  x-to-queue (merge updated-x
+                                    {:out out :check-in check-in :check-out check-out
+                                     :data data :status status})]
+              (if (= status :queue)
+                (do
+                  (check-in)
+                  (a/>! queue x-to-queue))
+                (a/>! out x-to-queue))))
+          (check-out))))
+
 (defn threads
   "Starts up thread-count threads, and creates queue-count queue channels. Each
    thread is set up to process data as put on the queues. Returns a map with the
@@ -34,24 +52,9 @@
       (a/thread
         (loop []
           (process-hook thread-i)
-          (let [[{:keys [out check-in check-out] :as x} _] (a/alts!! p-queues :priority true)]
+          (let [[x _] (a/alts!! p-queues :priority true)]
             (when x ;;highest priority halt can be closed->thread finishes
-              (let [{:keys [data pipe] :as updated-x} (wrapper update-x x)
-                    queue (get queues (:i pipe))]
-                (a/go (doseq [data data]
-                        (let [status (cond (instance? Throwable data) :error
-                                           (empty? pipe)              :result
-                                           (nil? data)                :nil
-                                           :else                      :queue)
-                              x-to-queue (merge updated-x
-                                                {:out out :check-in check-in :check-out check-out
-                                                 :data data :status status})]
-                          (if (= status :queue)
-                            (do
-                              (check-in)
-                              (a/>! queue x-to-queue))
-                            (a/>! out x-to-queue))))
-                      (check-out)))
+              (process-x x wrapper queues)
               (recur))))))
     {:queue (first queues) :halt halt}))
 
@@ -77,7 +80,8 @@
     (a/go
       (loop []
         (if-let [data (a/<! in)]
-          (let [x {:data data :check-in check-in :check-out check-out :out out :pipe pipe}]
+          (let [x {:data data :check-in check-in :check-out check-out
+                   :out out :pipe pipe}]
             (check-in)
             (when (a/>! worker x) (recur)))
           (check-out))))

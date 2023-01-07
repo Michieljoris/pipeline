@@ -37,15 +37,18 @@
        (satisfies? async-impl/WritePort c)
        (satisfies? async-impl/Channel c)))
 
-(defn buffered-reader? [source]
+(defn buffered-reader?
+   "Test if something is of type BufferReader, such as returned
+   from (clojure.java.io/reader \"some file name\")"
+  [source]
   (instance? java.io.BufferedReader source))
 
 (defn channeled
   "Converts a source into a channel. Accepts as source BufferedReaders,
    channels, collections or a function. Function should return an accepted
    source. Returned channel will return, at most, n items and then be closed if
-   n is not nil. When source is exhausted channel will be closed, except when
-   source is already a channel."
+   n is not nil. When source is not a channel exhausted returned channel will be
+   closed."
   [source n]
   (let [source-as-channel (a/chan 500)]
     (if (fn? source)
@@ -68,10 +71,13 @@
           (cond->> source-as-channel
             n (a/take n))))))
 
-(defn poll-thread-count [thread-count halt thread-i]
+(defn block-on-pred
+   "Polls the b atom every ms milliseconds, returns when (pred a @b) returns false
+   or when halt channel is closed."
+  [a b pred halt ms]
   (loop []
-    (when (and (>= thread-i @thread-count))
-      (let [[_ c] (a/alts!! [(a/timeout 1000) halt]) ]
+    (when (pred a @b)
+      (let [[_ c] (a/alts!! [(a/timeout ms) halt]) ]
         (when (not= c halt)
           (recur))))))
 
@@ -85,34 +91,21 @@
           (deliver p (or (get collect out-type) :done)))))
     promises))
 
-(defn consume-channel [c]
+(defn >!!null
+  "Reads and discards all values read from c"
+  [c]
   (a/go-loop []
     (when (a/<! c)
       (recur))))
 
-(defn linked-list [xs]
-   (reduce (fn [ll x]
-             (assoc x :next ll))
-           (reverse xs)))
-
-;; (poll-thread-count thread-i thread-count halt)
-
-
+(defn linked-list
+  "Returns a linked list built from the elements of xs collection with each
+   element linked to the next."
+  [xs]
+  (reduce (fn [ll x]
+            (assoc x :next ll))
+          (reverse xs)))
 (comment
-  (defn pipe
-  "Takes elements from the from channel and supplies them to the to
-  channel. By default, the to channel will be closed when the from
-  channel closes, but can be determined by the close?  parameter. Will
-  stop consuming the from channel if the to channel closes"
-  ([from to] (pipe from to true))
-  ([from to close?]
-     (go-loop []
-      (let [v (<! from)]
-        (if (nil? v)
-          (when close? (close! to))
-          (when (>! to v)
-            (recur)))))
-     to))
   (defn csv-map
     "Converts rows from a CSV file with an initial header row into a
    lazy seq of maps with the header row keys (as keywords). The 0-arg
