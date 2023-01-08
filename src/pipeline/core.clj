@@ -3,6 +3,12 @@
             [clojure.spec.alpha :as s]
             [pipeline.util :as u]))
 
+(defn apply-xf
+  "Calls the pipe's xf function on data and updates pipe to the next one."
+  [{:keys [data pipe] :as x}]
+  (merge x {:data ((:xf pipe) data)
+            :pipe (:next pipe)}))
+
 (defn queue?
   "Decide on queuing for further processing."
   [pipe data]
@@ -10,7 +16,7 @@
            (nil? data))))
 
 (defn enqueue
-   "Enqueue x on the appropriate queue."
+  "Enqueue x on the appropriate queue."
   [{:keys [data pipe] :as x} queues]
   (let [{:keys [check-in check-out out]} (meta x)
         queue (get queues (:i pipe))]
@@ -21,22 +27,15 @@
         (a/>! out x))
       (check-out))))
 
-(defn update-x
-  "Calls the pipe's xf function on data and updates pipe to the next one."
-  [{:keys [data pipe] :as x}]
-  (merge x {:data ((:xf pipe) data)
-            :pipe (:next pipe)}))
-
 (defn worker
   "Starts up thread-count threads, and creates queue-count queue channels. Each
    thread is set up to process data as put on the queues. Returns the first of
-   the queues and a halt channel, that when closed stops all threads. The
-   thread-hook function gets called with the thread number every time the
-   thread starts any new work."
+   the queues. Halt when closed stops all threads. The thread-hook function gets
+   called with the thread number every time the thread starts any new work."
   ([thread-count] (worker thread-count nil))
-  ([thread-count {:keys [queue-count thread-hook halt update-x enqueue]
+  ([thread-count {:keys [queue-count thread-hook halt apply-xf enqueue]
                   :or   {thread-hook u/noop halt (a/chan) queue-count 100
-                         update-x update-x enqueue enqueue}}]
+                         apply-xf apply-xf enqueue enqueue}}]
    (let [queues (->> (repeatedly a/chan) (take queue-count) vec)
          p-queues (reverse (into [halt] queues))]
      (dotimes [thread-i thread-count]
@@ -45,7 +44,7 @@
            (thread-hook thread-i)
            (let [[x _] (a/alts!! p-queues :priority true)]
              (when x
-               (enqueue (update-x x) queues)
+               (enqueue (apply-xf x) queues)
                (recur))))))
      (first queues))))
 

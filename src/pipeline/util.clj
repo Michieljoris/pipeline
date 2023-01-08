@@ -7,9 +7,6 @@
 
 (def noop (constantly nil))
 
-(defn assert-spec [spec data]
-  (assert (s/valid? spec data) (s/explain-str spec data)))
-
 (defn log-count
   "Returns a function that will log msg every n invocations."
   [log msg n]
@@ -97,16 +94,16 @@
           (recur))))))
 
 (defn as-promises
-   "TODO"
-  ([out]
-   (let [promises {:result (promise) :nil-result (promise)}]
-     (a/go-loop [collect nil]
-       (if-let [{:keys [data] :as x} (a/<! out)]
-         (recur (let [status (if data :result :nil-result)]
-                  (update collect status conj x)))
-         (doseq [[out-type p] promises]
-           (deliver p (get collect out-type)))))
-     promises)))
+  "TODO"
+  [out]
+  (let [promises {:result (promise) :nil-result (promise)}]
+    (a/go-loop [collect nil]
+      (if-let [{:keys [data] :as x} (a/<! out)]
+        (recur (let [status (if data :result :nil-result)]
+                 (update collect status conj x)))
+        (doseq [[out-type p] promises]
+          (deliver p (get collect out-type)))))
+    promises))
 
 (defn >!!null
   "Reads and discards all values read from c"
@@ -126,7 +123,7 @@
 (defn csv-xf
   "Takes a csv-source channel, reads the first (headers) element and returns a
    function that will take row elements and returns maps with the headers as
-   keywords. Throws is channel is closed or is blocked for ms"
+   keywords. Throws if channel is closed or is blocked for ms milliseconds"
   [csv-source ms]
   (if-let [[header-str _] (a/alts!! [csv-source (a/timeout ms)])]
     (let [headers (map keyword (str/split header-str #","))]

@@ -45,7 +45,7 @@
         wrapper (fn [{:keys [pipe data] :as x}]
                   ((:log-count pipe #(do)))
                   (-> (update x :transforms (fnil conj []) data)
-                      u/update-x))
+                      p/update-x))
         halt (a/chan)
         thread-hook (fn [thread-i] (tap> {:thread-i thread-i}))
         thread-hook #(u/block-on-pred % (atom 5) > halt 1000)
@@ -425,3 +425,6 @@
    used to hook into pre and post (xf data), eg. for stats or debugging."
   [update-x x]
   (update-x x))
+
+;; (defn assert-spec [spec data]
+;;   (assert (s/valid? spec data) (s/explain-str spec data)))

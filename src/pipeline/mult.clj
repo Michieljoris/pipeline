@@ -1,7 +1,7 @@
 (ns pipeline.mult
   (:require [clojure.core.async :as a]))
 
-(defn update-x
+(defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.
    Handler functions passed to wrapper together with x"
   [{:keys [data pipe] {:keys [xf mult]} :pipe :as x}]

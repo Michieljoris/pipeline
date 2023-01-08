@@ -31,6 +31,15 @@
      (map :data)
      )
 
+(->> (p/flow (u/channeled (range 5))
+             (p/as-pipe [{:xf inc}
+                         {:xf inc}])
+             (p/worker 1))
+     u/as-promises
+     :result deref
+     ;; (map :data)
+     )
+
 
 (let [start-time   (stat/now)
       source (u/channeled (map #(hash-map :id %) (range 5)) 2)
