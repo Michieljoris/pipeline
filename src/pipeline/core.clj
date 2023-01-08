@@ -4,33 +4,16 @@
             [pipeline.util :as u]))
 
 (defn- update-x
-  "Actually calls the xf function on data and updates pipe to the next one."
+  "Actually calls the xf function on data and updates pipe to the next one.
+   Handler functions passed to wrapper together with x"
   [{:keys [data pipe] {:keys [xf mult]} :pipe :as x}]
-  (assoc x :data (try
-                   (let [result (xf data)]
-                     (if mult
-                       (if (seq result) result [nil])
-                       [result]))
-                   (catch Throwable t [t]))
-         :pipe (:next pipe)))
-
-(defn- process-x
-  "Applies the pipe as set on x to data as set on x, then queues the results."
-  [{{:keys [out check-in check-out] :as q} :q :as x} wrapper queues]
-  (let [{:keys [data pipe] :as updated-x} (wrapper update-x x)
-        queue (get queues (:i pipe))]
-    (a/go (doseq [data data]
-            (let [status (cond (instance? Throwable data) :error
-                               (empty? pipe)              :result
-                               (nil? data)                :nil-result
-                               :else                      :queue)
-                  x-to-queue (merge updated-x {:q q :data data :status status})]
-              (if (= status :queue)
-                (do
-                  (check-in)
-                  (a/>! queue x-to-queue))
-                (a/>! out x-to-queue))))
-          (check-out))))
+  (merge x {:data (try
+                    (let [result (xf data)]
+                      (if mult
+                        (if (seq result) result [nil])
+                        [result]))
+                    (catch Throwable t [t]))
+            :pipe (:next pipe)}))
 
 (defn threads
   "Starts up thread-count threads, and creates queue-count queue channels. Each
@@ -52,7 +35,22 @@
            (thread-hook thread-i)
            (let [[x _] (a/alts!! p-queues :priority true)]
              (when x ;;nil when halt is closed
-               (process-x x wrapper queues)
+               (let [{:keys [check-in check-out out]} (meta x)
+                     {:keys [data pipe] :as updated-x} (wrapper update-x x)
+                     queue (get queues (:i pipe))]
+                 (a/go (doseq [data data]
+                         (let [status (cond (instance? Throwable data) :error
+                                            (empty? pipe)              :result
+                                            (nil? data)                :nil-result
+                                            :else                      :queue)
+                               x-to-queue (assoc updated-x :data data :status status)]
+                           (if (= status :queue)
+                             (do
+                               (check-in)
+                               (a/>! queue x-to-queue))
+                             (a/>! out x-to-queue))))
+                       (check-out)))
+               ;; (process-x x wrapper queues)
                (recur))))))
      (first queues))))
 
@@ -76,10 +74,9 @@
    ;; (u/assert-spec ::flow-args {:source in :pipeline-xfs pipe})
    (let [monitor (atom 0)
          check-in #(swap! monitor inc)
-         check-out #(when (zero? (swap! monitor dec))
-                      (when close? (a/close! out)))
-         wrapped-x {:q {:check-in check-in :check-out check-out :out out}
-                    :pipe pipe}]
+         check-out #(when (and (zero? (swap! monitor dec)) close?)
+                      (a/close! out))
+         wrapped-x (with-meta {:pipe pipe} {:check-in check-in :check-out check-out :out out})]
      (check-in)
      (a/go
        (loop []

@@ -59,7 +59,11 @@
                      :duration (/ (- (stat/now) start-time) 1000.0)})))
     ))
 
-
+(-> (with-meta {:a 1} {:some :meta})
+    (assoc :b 2)
+    (dissoc :a)
+    meta
+    )
 
 
 ;; DONE: log every so many seconds, but only if there's something to log
