@@ -42,16 +42,16 @@
              {:xf #(assoc % :step-1 true)}
              {:xf #(assoc % :step-2 true)}]
         thread-count 10
-        wrapper (fn [update-x {:keys [pipe data] :as x}]
+        wrapper (fn [{:keys [pipe data] :as x}]
                   ((:log-count pipe #(do)))
                   (-> (update x :transforms (fnil conj []) data)
-                      update-x))
+                      u/update-x))
         halt (a/chan)
         thread-hook (fn [thread-i] (tap> {:thread-i thread-i}))
         thread-hook #(u/block-on-pred % (atom 5) > halt 1000)
-        worker (p/threads thread-count (count xfs) {:wrapper wrapper
-                                                              :thread-hook thread-hook
-                                                              :halt halt})
+        worker (p/worker thread-count {:update-x wrapper
+                                       :thread-hook thread-hook
+                                       :halt halt})
         out (p/flow source (p/as-pipe xfs) worker)]
 
     (doseq [[status p] (u/as-promises out)]
@@ -408,3 +408,20 @@
          ;;                             (tap> {:monitor [old new]})
 
          ;;                             ))
+
+(do
+  (defmacro foo []
+    `(if (queue? ~'pipe ~'data)
+       (do
+         (~'check-in)
+         (a/>!~'queue ~'x-to-queue))
+       (a/>! ~'out ~'x-to-queue)))
+  (macroexpand '(foo)))
+
+;; (when (some-> x update-x (enqueue queues)) (recur))
+
+(defn default-wrapper
+  "Expects the update-x fn to be called on x and the result to be returned. To be
+   used to hook into pre and post (xf data), eg. for stats or debugging."
+  [update-x x]
+  (update-x x))

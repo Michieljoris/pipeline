@@ -10,12 +10,6 @@
 (defn assert-spec [spec data]
   (assert (s/valid? spec data) (s/explain-str spec data)))
 
-(defn default-wrapper
-  "Expects the update-x fn to be called on x and the result to be returned. To be
-   used to hook into pre and post (xf data), eg. for stats or debugging."
-  [update-x x]
-  (update-x x))
-
 (defn log-count
   "Returns a function that will log msg every n invocations."
   [log msg n]
@@ -102,15 +96,14 @@
         (when (not= c halt)
           (recur))))))
 
-
 (defn as-promises
    "TODO"
-  ([out] (as-promises out (fn [update-collect _x _status] (update-collect))))
-  ([out on-processed]
-   (let [ promises {:result (promise):error (promise) :nil-result (promise)}]
+  ([out]
+   (let [promises {:result (promise) :nil-result (promise)}]
      (a/go-loop [collect nil]
-       (if-let [{:keys [status] :as x} (a/<! out)]
-         (recur (on-processed #(update collect status conj x) x status))
+       (if-let [{:keys [data] :as x} (a/<! out)]
+         (recur (let [status (if data :result :nil-result)]
+                  (update collect status conj x)))
          (doseq [[out-type p] promises]
            (deliver p (get collect out-type)))))
      promises)))

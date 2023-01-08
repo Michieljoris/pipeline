@@ -3,30 +3,40 @@
             [clojure.spec.alpha :as s]
             [pipeline.util :as u]))
 
-(defn- update-x
-  "Actually calls the xf function on data and updates pipe to the next one.
-   Handler functions passed to wrapper together with x"
-  [{:keys [data pipe] {:keys [xf mult]} :pipe :as x}]
-  (merge x {:data (try
-                    (let [result (xf data)]
-                      (if mult
-                        (if (seq result) result [nil])
-                        [result]))
-                    (catch Throwable t [t]))
+(defn queue?
+  "Decide on queuing for further processing."
+  [pipe data]
+  (not (or (empty? pipe)
+           (nil? data))))
+
+(defn enqueue
+   "Enqueue x on the appropriate queue."
+  [{:keys [data pipe] :as x} queues]
+  (let [{:keys [check-in check-out out]} (meta x)
+        queue (get queues (:i pipe))]
+    (a/go
+      (if (queue? pipe data)
+        (do  (check-in)
+             (a/>! queue x))
+        (a/>! out x))
+      (check-out))))
+
+(defn update-x
+  "Calls the pipe's xf function on data and updates pipe to the next one."
+  [{:keys [data pipe] :as x}]
+  (merge x {:data ((:xf pipe) data)
             :pipe (:next pipe)}))
 
-(defn threads
+(defn worker
   "Starts up thread-count threads, and creates queue-count queue channels. Each
    thread is set up to process data as put on the queues. Returns the first of
    the queues and a halt channel, that when closed stops all threads. The
    thread-hook function gets called with the thread number every time the
    thread starts any new work."
-  ([thread-count] (threads thread-count 100))
-  ([thread-count queue-count] (threads thread-count queue-count nil))
-  ([thread-count queue-count {:keys [thread-hook wrapper halt]
-                              :or   {thread-hook u/noop wrapper #(%1 %2) halt (a/chan)}}]
-   (u/assert-spec ::threads-args {:thread-count thread-count :queue-count queue-count
-                                  :thread-hook thread-hook})
+  ([thread-count] (worker thread-count nil))
+  ([thread-count {:keys [queue-count thread-hook halt update-x enqueue]
+                  :or   {thread-hook u/noop halt (a/chan) queue-count 100
+                         update-x update-x enqueue enqueue}}]
    (let [queues (->> (repeatedly a/chan) (take queue-count) vec)
          p-queues (reverse (into [halt] queues))]
      (dotimes [thread-i thread-count]
@@ -34,23 +44,8 @@
          (loop []
            (thread-hook thread-i)
            (let [[x _] (a/alts!! p-queues :priority true)]
-             (when x ;;nil when halt is closed
-               (let [{:keys [check-in check-out out]} (meta x)
-                     {:keys [data pipe] :as updated-x} (wrapper update-x x)
-                     queue (get queues (:i pipe))]
-                 (a/go (doseq [data data]
-                         (let [status (cond (instance? Throwable data) :error
-                                            (empty? pipe)              :result
-                                            (nil? data)                :nil-result
-                                            :else                      :queue)
-                               x-to-queue (assoc updated-x :data data :status status)]
-                           (if (= status :queue)
-                             (do
-                               (check-in)
-                               (a/>! queue x-to-queue))
-                             (a/>! out x-to-queue))))
-                       (check-out)))
-               ;; (process-x x wrapper queues)
+             (when x
+               (enqueue (update-x x) queues)
                (recur))))))
      (first queues))))
 
@@ -62,16 +57,15 @@
    (->> xfs (map-indexed #(assoc %2 :i (+ offset %1))) u/linked-list)))
 
 (defn flow
-  "Takes elements from the in channel and pipes them to the out channel, using
-   worker, producing 1 or more outputs per input. The pipe gets assoced with
-   every input element and is used by the threads to apply the right
-   transformation. Results are unordered relative to input. By default, the to
-   channel will be closed when the from channel closes, but can be determined by
-   the close? parameter. Will stop consuming the in channel if the out channel
-   closes."
+   "Flows in through the pipe using worker, producing 1 or more outputs per input.
+   Results are put on the returned out channel, which can be passed. The pipe
+   gets assoced with every input element and is used by the threads to apply the
+   right transformation. Results are unordered relative to input. By default,
+   the to channel will be closed when the from channel closes, but can be
+   determined by the close? parameter. Will stop consuming the in channel if the
+   out channel closes."
   ([in pipe worker] (flow in pipe worker nil))
   ([in pipe worker {:keys [out close?] :or {close? true out (a/chan)}}]
-   ;; (u/assert-spec ::flow-args {:source in :pipeline-xfs pipe})
    (let [monitor (atom 0)
          check-in #(swap! monitor inc)
          check-out #(when (and (zero? (swap! monitor dec)) close?)
@@ -86,7 +80,6 @@
              (recur))))
        (check-out))
      out)))
-
 
 (s/def ::f fn?)
 (s/def ::wrapped-f fn?)

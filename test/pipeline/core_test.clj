@@ -13,7 +13,7 @@
 (let [source (u/channeled (map #(hash-map :id %) (range 5)))
       pipe (p/as-pipe [{:xf #(assoc % :step-1 true)}
                        {:xf #(assoc % :step-2 true)}])
-      worker (p/threads 1)
+      worker (p/worker 1)
       out (p/flow source pipe worker)
       {:keys [result error nil-result]} (u/as-promises out)]
   (map #(select-keys % [:data :status]) @result)
@@ -21,13 +21,15 @@
   ;; @error
   ;; @nil-result
   )
+
 (->> (p/flow (u/channeled (map #(hash-map :id %) (range 5)))
-             (p/as-pipe [{:xf #(assoc % :step-1 true)}
-                         {:xf #(assoc % :step-2 true)}])
-             (p/threads 1))
+             (p/as-pipe [{:xf #(assoc % :step-1 :applied)}
+                         {:xf #(assoc % :step-2 :applied)}])
+             (p/worker 1))
      u/as-promises
      :result deref
-     (map :data))
+     (map :data)
+     )
 
 
 (let [start-time   (stat/now)
