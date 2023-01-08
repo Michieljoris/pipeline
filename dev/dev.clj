@@ -14,18 +14,23 @@
 
 ;; TODO: clean up dev
 ;; TODO: write readme
-;; TODO: add tests
+
 ;; TODO: Calculate ratio of blocking vs working and log as job is running and take blocking quotient into account!!!!
 ;; TODO: Adjust number of threads on the fly!!!!
 ;; TODO: auto adjust thread count to max throughput, minimal threads, then set to 80% for example
-;; TODO: log estimate on likely duration of job
- ;; TODO: merge xfs if they indicate they don't return multiple results
+
  ;; TODO: test with real pipeline.
  ;; TODO: benchmark!!!!
  ;; TODO: inspect all current saigo pipelines, and document, and see if they can use submitter
  ;; TODO: add throttler
+
+;; ------- test/showcase functionality
+;; TODO: add tests
+;; TODO: merge xfs if they indicate they don't return multiple results
+;; TODO: log estimate on likely duration of job
+;; TODO add stats examples
 ;; TODO: test changing pipe in wrapper
-;; DONE: log every so many seconds, but only if there's something to log
+;; TODO test running several flows with the same threads at the same time
 
 (comment
   (let [start-time   (stat/now)
@@ -44,12 +49,12 @@
         halt (a/chan)
         thread-hook (fn [thread-i] (tap> {:thread-i thread-i}))
         thread-hook #(u/block-on-pred % (atom 5) > halt 1000)
-        {:keys [queue]} (p/threads thread-count (count xfs) {:wrapper wrapper
-                                                                  :thread-hook thread-hook
-                                                                  :halt halt})
-        out (p/flow source (p/as-pipe xfs) queue)]
+        worker (p/threads thread-count (count xfs) {:wrapper wrapper
+                                                              :thread-hook thread-hook
+                                                              :halt halt})
+        out (p/flow source (p/as-pipe xfs) worker)]
 
-    (doseq [[status p] (u/out->promises out)]
+    (doseq [[status p] (u/as-promises out)]
       (future (tap> {status    (if (keyword? @p) @p @p)
                      :duration (/ (- (stat/now) start-time) 1000.0)})))
     ))
@@ -57,6 +62,7 @@
 
 
 
+;; DONE: log every so many seconds, but only if there's something to log
  ;; DONE: implement xf csv
  ;;   "Converts rows from a CSV file with an initial header row into a
  ;;   lazy seq of maps with the header row keys (as keywords). The 0-arg
@@ -287,21 +293,7 @@
 
 ;;     ))
 
-(defn split-by
-  "Takes a predicate, a source channel, and a map of channels. Out channel is
-   selected looking in the outs map for the result of applying predicate to
-   values. Outputs to channel under :default key if not found. The outs will
-   close after the source channel has closed."
-  [p ch outs]
-  (let [{:keys [default] :as outs'}
-        (update outs :default  #(or % (a/chan (a/dropping-buffer 1))))]
-    (a/go-loop []
-      (let [v (a/<! ch)]
-        (if (some? v)
-          (when (a/>! (get outs (p v) default) v)
-            (recur))
-          (doseq [out (vals outs')] (a/close! out)))))
-    outs'))
+
 
 (comment
 

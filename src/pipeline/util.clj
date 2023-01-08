@@ -10,6 +10,12 @@
 (defn assert-spec [spec data]
   (assert (s/valid? spec data) (s/explain-str spec data)))
 
+(defn default-wrapper
+  "Expects the update-x fn to be called on x and the result to be returned. To be
+   used to hook into pre and post (xf data), eg. for stats or debugging."
+  [update-x x]
+  (update-x x))
+
 (defn log-count
   "Returns a function that will log msg every n invocations."
   [log msg n]
@@ -63,27 +69,28 @@
    source. Returned channel will return, at most, n items and then be closed if
    n is not nil. When source is not a channel exhausted returned channel will be
    closed."
-  [source n]
-  (let [source-as-channel (a/chan 500)]
-    (if (fn? source)
-      (channeled (source) n)
-      (do (cond
-            (buffered-reader? source)
-            (a/onto-chan!! source-as-channel (line-seq source) true)
+  ([source] (channeled source nil))
+  ([source n]
+   (let [source-as-channel (a/chan 500)]
+     (if (fn? source)
+       (channeled (source) n)
+       (do (cond
+             (buffered-reader? source)
+             (a/onto-chan!! source-as-channel (line-seq source) true)
 
-            (coll? source)
-            (a/onto-chan! source-as-channel source)
+             (coll? source)
+             (a/onto-chan! source-as-channel source)
 
-            (channel? source)
-            (a/pipe source source-as-channel)
+             (channel? source)
+             (a/pipe source source-as-channel)
 
-            :else
-            (throw (ex-info (str "Pipeline's source must be either a BufferedReader, channel, "
-                                 "function, or a coll.\n"
-                                 "Got " (type source) ".")
-                            {:source source})))
-          (cond->> source-as-channel
-            n (a/take n))))))
+             :else
+             (throw (ex-info (str "Pipeline's source must be either a BufferedReader, channel, "
+                                  "function, or a coll.\n"
+                                  "Got " (type source) ".")
+                             {:source source})))
+           (cond->> source-as-channel
+             n (a/take n)))))))
 
 (defn block-on-pred
    "Polls the b atom every ms milliseconds, returns when (pred a @b) returns false
@@ -96,16 +103,16 @@
           (recur))))))
 
 
-(defn out->promises
+(defn as-promises
    "TODO"
-  ([out] (out->promises out (fn [update-collect _x _status] (update-collect))))
+  ([out] (as-promises out (fn [update-collect _x _status] (update-collect))))
   ([out on-processed]
-   (let [ promises {:result (promise):error (promise) :nil (promise)}]
+   (let [ promises {:result (promise):error (promise) :nil-result (promise)}]
      (a/go-loop [collect nil]
        (if-let [{:keys [status] :as x} (a/<! out)]
          (recur (on-processed #(update collect status conj x) x status))
          (doseq [[out-type p] promises]
-           (deliver p (or (get collect out-type) :done)))))
+           (deliver p (get collect out-type)))))
      promises)))
 
 (defn >!!null
@@ -134,3 +141,19 @@
         (let [columns (str/split row #",")]
           (zipmap headers columns))))
     (throw (ex-info "No input from csv-source" {}))))
+
+(defn split-by
+  "Takes a predicate, a source channel, and a map of channels. Out channel is
+   selected looking in the outs map for the result of applying predicate to
+   values. Outputs to channel under :default key if not found. The outs will
+   close after the source channel has closed."
+  [p ch outs]
+  (let [{:keys [default] :as outs'}
+        (update outs :default  #(or % (a/chan (a/dropping-buffer 1))))]
+    (a/go-loop []
+      (let [v (a/<! ch)]
+        (if (some? v)
+          (when (a/>! (get outs (p v) default) v)
+            (recur))
+          (doseq [out (vals outs')] (a/close! out)))))
+    outs'))

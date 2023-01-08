@@ -14,25 +14,17 @@
                    (catch Throwable t [t]))
          :pipe (:next pipe)))
 
-(defn default-wrapper
-  "Expects the update-x fn to be called on x and the result to be returned. To be
-   used to hook into pre and post (xf data), eg. for stats or debugging."
-  [update-x x]
-  (update-x x))
-
 (defn- process-x
   "Applies the pipe as set on x to data as set on x, then queues the results."
-  [{:keys [out check-in check-out] :as x} wrapper queues]
+  [{{:keys [out check-in check-out] :as q} :q :as x} wrapper queues]
   (let [{:keys [data pipe] :as updated-x} (wrapper update-x x)
         queue (get queues (:i pipe))]
     (a/go (doseq [data data]
             (let [status (cond (instance? Throwable data) :error
                                (empty? pipe)              :result
-                               (nil? data)                :nil
+                               (nil? data)                :nil-result
                                :else                      :queue)
-                  x-to-queue (merge updated-x
-                                    {:out out :check-in check-in :check-out check-out
-                                     :data data :status status})]
+                  x-to-queue (merge updated-x {:q q :data data :status status})]
               (if (= status :queue)
                 (do
                   (check-in)
@@ -46,21 +38,23 @@
    the queues and a halt channel, that when closed stops all threads. The
    thread-hook function gets called with the thread number every time the
    thread starts any new work."
-  [thread-count queue-count {:keys [thread-hook wrapper halt]
-                             :or {thread-hook u/noop wrapper default-wrapper halt (a/chan)}}]
-  (u/assert-spec ::threads-args {:thread-count thread-count :queue-count queue-count
-                                 :thread-hook thread-hook})
-  (let [queues (->> (repeatedly a/chan) (take queue-count) vec)
-        p-queues (reverse (into [halt] queues))]
-    (dotimes [thread-i thread-count]
-      (a/thread
-        (loop []
-          (thread-hook thread-i)
-          (let [[x _] (a/alts!! p-queues :priority true)]
-            (when x ;;highest priority halt can be closed->thread finishes
-              (process-x x wrapper queues)
-              (recur))))))
-    {:queue (first queues) :halt halt}))
+  ([thread-count] (threads thread-count 100))
+  ([thread-count queue-count] (threads thread-count queue-count nil))
+  ([thread-count queue-count {:keys [thread-hook wrapper halt]
+                              :or   {thread-hook u/noop wrapper #(%1 %2) halt (a/chan)}}]
+   (u/assert-spec ::threads-args {:thread-count thread-count :queue-count queue-count
+                                  :thread-hook thread-hook})
+   (let [queues (->> (repeatedly a/chan) (take queue-count) vec)
+         p-queues (reverse (into [halt] queues))]
+     (dotimes [thread-i thread-count]
+       (a/thread
+         (loop []
+           (thread-hook thread-i)
+           (let [[x _] (a/alts!! p-queues :priority true)]
+             (when x ;;nil when halt is closed
+               (process-x x wrapper queues)
+               (recur))))))
+     (first queues))))
 
 (defn as-pipe
   "Prepares xfs (list of maps, each having at least a single argument function
@@ -77,22 +71,23 @@
    channel will be closed when the from channel closes, but can be determined by
    the close? parameter. Will stop consuming the in channel if the out channel
    closes."
-  ([in pipe worker] (flow in pipe worker (a/chan) nil))
-  ([in pipe worker out {:keys [close?] :or {close? true}}]
+  ([in pipe worker] (flow in pipe worker nil))
+  ([in pipe worker {:keys [out close?] :or {close? true out (a/chan)}}]
    ;; (u/assert-spec ::flow-args {:source in :pipeline-xfs pipe})
    (let [monitor (atom 0)
          check-in #(swap! monitor inc)
          check-out #(when (zero? (swap! monitor dec))
-                      (when close? (a/close! out)))]
+                      (when close? (a/close! out)))
+         wrapped-x {:q {:check-in check-in :check-out check-out :out out}
+                    :pipe pipe}]
      (check-in)
      (a/go
        (loop []
-         (if-let [data (a/<! in)]
-           (let [x {:check-in check-in :check-out check-out :out out
-                    :data data  :pipe pipe }]
-             (check-in)
-             (when (a/>! worker x) (recur)))
-           (check-out))))
+         (when-let [data (a/<! in)]
+           (check-in)
+           (when (a/>! worker (assoc wrapped-x :data data) )
+             (recur))))
+       (check-out))
      out)))
 
 
