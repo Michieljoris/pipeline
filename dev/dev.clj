@@ -428,3 +428,19 @@
 
 ;; (defn assert-spec [spec data]
 ;;   (assert (s/valid? spec data) (s/explain-str spec data)))
+
+(defn split-by
+  "Takes a predicate, a source channel, and a map of channels. Out channel is
+   selected looking in the outs map for the result of applying predicate to
+   values. Outputs to channel under :default key if not found. The outs will
+   close after the source channel has closed."
+  [outs p ch]
+  (let [{:keys [default] :as outs'}
+        (update outs :default  #(or % (a/chan (a/dropping-buffer 1))))]
+    (a/go-loop []
+      (let [v (a/<! ch)]
+        (if (some? v)
+          (when (a/>! (get outs' (p v) default) v)
+            (recur))
+          (doseq [out (vals outs')] (a/close! out)))))
+    outs'))

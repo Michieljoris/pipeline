@@ -105,6 +105,16 @@
           (deliver p (get collect out-type)))))
     promises))
 
+(defn as-promise
+  "TODO"
+  [out]
+  (let [p (promise)]
+    (a/go-loop [collect nil]
+      (if-let [x (a/<! out)]
+        (recur (conj collect x))
+        (deliver p collect)))
+    p))
+
 (defn >!!null
   "Reads and discards all values read from c"
   [c]
@@ -132,18 +142,3 @@
           (zipmap headers columns))))
     (throw (ex-info "No input from csv-source" {}))))
 
-(defn split-by
-  "Takes a predicate, a source channel, and a map of channels. Out channel is
-   selected looking in the outs map for the result of applying predicate to
-   values. Outputs to channel under :default key if not found. The outs will
-   close after the source channel has closed."
-  [p ch outs]
-  (let [{:keys [default] :as outs'}
-        (update outs :default  #(or % (a/chan (a/dropping-buffer 1))))]
-    (a/go-loop []
-      (let [v (a/<! ch)]
-        (if (some? v)
-          (when (a/>! (get outs (p v) default) v)
-            (recur))
-          (doseq [out (vals outs')] (a/close! out)))))
-    outs'))
