@@ -1,33 +1,18 @@
-#+title: Readme
-
 * Description
-Apply transforming functions (xfs) to a source in parallel/concurrently. If an
-xf returns a multiple result each can be processed further. Results are
-unordered.
-
-
-Threads can be shut down at any time by closing a halt channel.
+Apply a series transforming functions (xfs) to each element in a source channel
+in parallel, results are unordered.
 
 Xf functions is a list of maps, each of which should have at least one entry
-under the :f key, namely the transforming function. This function takes a single
-data argument. Returning nil stops the processing of the data element. If xf map
-has an entry :mult set to truthy result is expected to be some sort of list of
-data elements, and each will be processed separately.
-
-By passing in a pre-xf and/or post-xf each step can be monitored/debugged.
-
-Hooks can be passed for the start and end of processing of the data set and the
-first queuing and end of processing of each data element.
+under the :xf key, namely the transforming function. This function takes a single
+data argument. Returning nil stops the processing of the data element.
 
 Every data element gets wrapped and carries its own remaining transformations
-with it at any stage in the pipeline. Because of this the same threads could
-process multiple datasets/xfs pairs. Or each element could be processed
-differently.
+with it at any stage in the pipeline. Multiple data sets can be processed
+simultaneously each with their own transformations and/or transformations can be
+set/replaced during processing. The apply-xf hook can enhance this wrapped data
+element at eg. to keep stats, and do things like logging every so many elements.
 
-Errors thrown by xf functions are caught and returned as part of the wrapped
-data element.
-
-Final result is a set of promises for each return type (result, error and nil).
+Threads can be shut down at any time by closing a halt channel.
 
 Intuitively, if we had x number of all-purpose workers/machines/threads and n
 items that each require 'work' or transforming in multiple stages we would not
@@ -37,16 +22,25 @@ itself. Once processed the item might need further processing, if so it will be
 added to the workers queue again (albeit a higher priority queue to ensure all
 transformations are applied).
 
-Data elements are wrapped so they can carry their (wrapped) transformations with
-them. The pre-xf, post-xf and on-queue hooks can also enhance this wrapped data
-element at any time, but also use it to keep stats, and do things like logging
-every so many elements.
+By using hooks:
 
+- Errors thrown by xf functions can be caught and returned as part of the wrapped data element (see pipeline.catch-ex).
 
-Thread count can be varied on the fly, set to zero to pause job.
-Source can be a collection, a channel, a buffered reader (eg. result of
-(io/reader "file-name")) or a function returning any of these.
+- Thread count can be varied on the fly, or set to zero to pause job.
 
+- If xf map has an entry :mult set to truthy result is expected to be some sort of list of data elements, and each will be processed separately (see pipeline.mult).
+
+By using util functions:
+
+- Source can be a collection, a channel, a buffered reader (eg. result of (io/reader "file-name")) or a function returning any of these.
+
+- Collect results as set of promises.
+
+- Log every so many elements, and/or periodically.
+
+- Combine transforming functions when possible.
+
+- Ingest csv data
 
 * Rationale
 Calculating the minimum number of threads to maximize use of a processor is a
@@ -79,28 +73,14 @@ Use core.async's pipeline when results need to be ordered. This pipeline
 currentlly makes distinction between blocking and compute work only
 conceptually.
 
-
 * Examples
 #+begin_src clojure
-(let [source (fn [] (a/to-chan! (map #(hash-map :id %) (range 50))))
-      xfs [{:f #(assoc % :step-1 true)}
-           {:f #(assoc % :step-2 true)}]
-      halt (a/chan)
-      pipeline (p/pipeline xfs (p/threads 10 (count xfs) halt))
-      {:keys [result]} (p/flow source pipeline
-                               {:n 3
-                                :on-processed (fn [update-collect x status]
-                                                 (update-collect))})]
-    (map :data @result))
-=>  ({:step-2 true
-       :step-1 true
-       :id 1}
-      {:step-2 true
-       :step-1 true
-       :id 2}
-      {:step-2 true
-       :step-1 true
-       :id 0}
+;; Minimal pipeline that returns a channel that closes after taking 5 values
+;; which will be 2,3,4,5,6 in an undetermined order
+(p/flow (u/channeled (range 5))
+        (p/as-pipe [{:xf inc}
+                    {:xf inc}])
+        (p/worker 1))
 #+end_src
 
 * TODO

@@ -16,7 +16,9 @@
            (nil? data))))
 
 (defn enqueue
-  "Enqueue x on the appropriate queue."
+  "Enqueue x on the appropriate queue. Queueing should block in a go thread.
+   check-in should be called before every queueing, check-out should be called
+   after all results are queued"
   [{:keys [data pipe] :as x} queues]
   (let [{:keys [check-in check-out out]} (meta x)
         queue (get queues (:i pipe))]
@@ -35,7 +37,8 @@
   ([thread-count] (worker thread-count nil))
   ([thread-count {:keys [queue-count thread-hook halt apply-xf enqueue]
                   :or   {thread-hook u/noop halt (a/chan) queue-count 100
-                         apply-xf apply-xf enqueue enqueue}}]
+                         enqueue enqueue
+                         apply-xf apply-xf}}]
    (let [queues (->> (repeatedly a/chan) (take queue-count) vec)
          p-queues (reverse (into [halt] queues))]
      (dotimes [thread-i thread-count]
@@ -69,13 +72,14 @@
          check-in #(swap! monitor inc)
          check-out #(when (and (zero? (swap! monitor dec)) close?)
                       (a/close! out))
-         wrapped-x (with-meta {:pipe pipe} {:check-in check-in :check-out check-out :out out})]
+         wrapped-x (with-meta {} {:check-in check-in :check-out check-out :out out})
+         pipe-fn (if (fn? pipe) pipe (constantly pipe))]
      (check-in)
      (a/go
        (loop []
          (when-let [data (a/<! in)]
            (check-in)
-           (when (a/>! worker (assoc wrapped-x :data data) )
+           (when (a/>! worker (assoc wrapped-x :data data :pipe (pipe-fn data)) )
              (recur))))
        (check-out))
      out)))

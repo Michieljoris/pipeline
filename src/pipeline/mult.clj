@@ -1,5 +1,6 @@
 (ns pipeline.mult
-  (:require [clojure.core.async :as a]))
+  (:require [clojure.core.async :as a]
+            [pipeline.catch-ex :as catch-ex]))
 
 (defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.
@@ -13,18 +14,14 @@
                     (catch Throwable t [t]))
             :pipe (:next pipe)}))
 
-(defn queue? [pipe data]
-  (not (or (instance? Throwable data)
-           (empty? pipe)
-           (nil? data))))
-
 (defn enqueue
-  [{:keys [data pipe] :as updated-x} queue]
-  (let [{:keys [check-in check-out out]} (meta updated-x)]
+  [{:keys [data pipe] :as updated-x} queues]
+  (let [{:keys [check-in check-out out]} (meta updated-x)
+        queue (get queues (:i pipe))]
     (a/go
       (doseq [data data]
         (let [x-to-queue (assoc updated-x :data data)]
-          (if (queue? pipe data)
+          (if (catch-ex/queue? pipe data)
             (do
               (check-in)
               (a/>! queue x-to-queue))

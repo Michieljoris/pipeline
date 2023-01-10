@@ -16,16 +16,26 @@
         (when (zero? (mod new-cnt n))
           (log [msg :count new-cnt]))))))
 
+(defn ms->duration [ms]
+    (let [hours (quot ms (* 60 60 1000))
+          minutes (- (quot ms (* 60  1000)) (* hours 60))
+          seconds (- (quot ms 1000) (* minutes 60) (* hours 60 60))]
+      (str hours "h:" minutes "m:" seconds "s" (when (< ms 1000) (str ":" ms "ms") ) )))
+
 (defn log-period [log msg ms]
-  (let [t (atom (System/currentTimeMillis))
+  (let [start (System/currentTimeMillis)
+        t (atom start)
         cnt (atom 0)]
     (fn []
-      (let [old-t @t
-            new-t (System/currentTimeMillis)]
-        (when (> (- new-t old-t) ms)
-          (log [msg :count @cnt])
-          (reset! t new-t))
-        (swap! cnt inc)))))
+      (let [new-t (System/currentTimeMillis)
+            [old-t new-t]
+            (swap-vals! t (fn [old-t]
+                            (if (> (- new-t old-t) ms)
+                              new-t
+                              old-t)))]
+        (when (not= old-t new-t)
+          (log [msg :cnt @cnt :duration (ms->duration (- new-t start))])
+          (swap! cnt inc))))))
 
 (defn combine-xfs
    "TODO"
