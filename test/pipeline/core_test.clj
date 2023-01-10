@@ -13,10 +13,10 @@
    [clojure.test :refer :all]))
 
 ;; TEST:
-;;- adjust thread count
-;;- demo use of wrapper
-;;- change pipe mid job for an ex
-;;- use same worker for more than 1 job
+;;- adjust thread count on the fly
+;;- change pipe mid job for an x.
+;;- use same worker for more than 1 job, having different pipes
+;;- set different pipe for every source element
 ;;- channeled (csv, map, channel, n)
 ;;- DONE basic
 ;;- DONE throw exception
@@ -242,7 +242,6 @@
       (is (= (count error) 1))
       (is (= (:pipe (first error)) {:xf clojure.core/inc
                                     :i  2}))
-
       (is (= (ex-message (:data (first error))) "we don't like data being 100"))
       (is (= (ex-data (:data (first error))) {:data 100}))))
 

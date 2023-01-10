@@ -21,7 +21,7 @@
 
  ;; TODO: test with real pipeline.
  ;; TODO: benchmark!!!!
- ;; TODO: inspect all current saigo pipelines, and document, and see if they can use submitter
+ ;; TODO: inspect all current saigo pipelines, and document, and see if they can use this
  ;; TODO: add throttler
 
 ;; ------- test/showcase functionality
@@ -31,6 +31,7 @@
 ;; TODO add stats examples
 ;; TODO: test changing pipe in wrapper
 ;; TODO test running several flows with the same threads at the same time
+;; TODO: test assigning different pipe to each source elementt
 
 (comment
   (let [start-time   (stat/now)

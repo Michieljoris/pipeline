@@ -1,10 +1,11 @@
 * Description
-Apply a series transforming functions (xfs) to each element in a source channel
-in parallel, results are unordered.
+Apply a series of transforming functions to each element in a source channel in
+parallel, results are unordered.
 
-Xf functions is a list of maps, each of which should have at least one entry
-under the :xf key, namely the transforming function. This function takes a single
-data argument. Returning nil stops the processing of the data element.
+Transforming functions are defined in a list of maps, each of which should have
+at least one entry under the :xf key, namely the transforming function. This
+function takes a single data argument. Returning nil stops the processing of the
+data element.
 
 Every data element gets wrapped and carries its own remaining transformations
 with it at any stage in the pipeline. Multiple data sets can be processed
