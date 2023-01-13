@@ -14,10 +14,12 @@
 
 ;; TEST:
 ;;- adjust thread count on the fly
-;;- change pipe mid job for an x.
-;;- use same worker for more than 1 job, having different pipes
-;;- set different pipe for every source element
-;;- channeled (csv, map, channel, n)
+;;- combine-xfs
+
+;;- DONE change pipe mid job for an x.
+;;- DONE set different pipe for every source element
+;;- DONE use same worker for more than 1 job, having different pipes
+;;- DONE channeled (csv, map, channel, n)
 ;;- DONE basic
 ;;- DONE throw exception
 ;;- DONE log-period and log-count
@@ -29,8 +31,7 @@
                              (empty? pipe)              :result
                              (nil? data)                :nil-result
                              :else                      :queue)))
-        #(sort-by :i %)
-        ))
+        #(sort-by :i %)))
 
 (defn extract-raw-results [out]
   (-> out
@@ -58,6 +59,25 @@
   (= a b))
 
 (comment
+ (future
+   (let [pipe2 (p/as-pipe [{:xf #(conj % :xf3)}
+                           {:xf #(conj % :xf4)}])
+         apply-xf (fn [x]
+                    (let [{:keys [data] :as x'} (p/apply-xf x)]
+                      (cond-> x'
+                        (and (even? (first data))
+                             (< (count data) 3)) (assoc :pipe pipe2))))]
+     (->> (p/flow (u/channeled (map vector (range 5)))
+                  (p/as-pipe [{:xf #(conj % :xf1)}
+                              {:xf #(conj % :xf2)}])
+                  (p/worker 1  {:apply-xf apply-xf}
+                            ))
+          extract-results
+          tap>))
+
+   )
+
+
   (future
     (tap> :===============================)
     (tap> (->> (p/flow (u/channeled (range 5))
@@ -245,33 +265,54 @@
       (is (= (ex-message (:data (first error))) "we don't like data being 100"))
       (is (= (ex-data (:data (first error))) {:data 100}))))
 
+  (testing "Using same worker for two sources"
+    (let [worker (p/worker 1)
+          out1 (p/flow (u/channeled (range 5))
+                       (p/as-pipe [{:xf inc}
+                                   {:xf inc}])
+                       worker)
+          out2 (p/flow (u/channeled (map (partial + 10) (range 5)))
+                       (p/as-pipe [{:xf inc}
+                                   {:xf inc}])
+                       worker)]
+      (is (= [2 3 4 5 6] (sort (:result (extract-results out1)))))
+      (is (= [12 13 14 15 16] (sort (:result (extract-results out2)))))))
 
-
- 
-
-  ;; (is (= (->> (p/flow (u/channeled (map #(hash-map :id %) (range 5)))
-  ;;                     (p/as-pipe [{:xf #(assoc % :step-1 :applied)}
-  ;;                                 {:xf #(assoc % :step-2 :applied)}])
-  ;;                     (p/worker 1))
-  ;;             u/as-promises
-  ;;             :result deref
-  ;;             (map :data)
-  ;;             (sort-by :id))
-  ;;        '({:step-2 :applied
-  ;;           :step-1 :applied
-  ;;           :id     0}
-  ;;          {:step-2 :applied
-  ;;           :step-1 :applied
-  ;;           :id     1}
-  ;;          {:step-2 :applied
-  ;;           :step-1 :applied
-  ;;           :id     2}
-  ;;          {:step-2 :applied
-  ;;           :step-1 :applied
-  ;;           :id     3}
-  ;;          {:step-2 :applied
-  ;;           :step-1 :applied
-  ;;           :id     4})))
+  (testing "Apply different pipe to each source element"
+    (is (=
+         (sort [2 21 4 23 6])
+         (->> (p/flow (u/channeled (range 5))
+                      (fn [s]
+                        (if (even? s)
+                          (p/as-pipe [{:xf inc}
+                                      {:xf inc}])
+                          (p/as-pipe [{:xf (partial + 10)}
+                                      {:xf (partial + 10)}])))
+                      (p/worker 1))
+              extract-results
+              :result
+              sort))))
+  (testing "Change pipe mid processing"
+    (let [pipe1 (p/as-pipe [{:xf #(conj % :xf1)}
+                            {:xf #(conj % :xf2)}])
+          pipe2 (p/as-pipe [{:xf #(conj % :xf3)}
+                            {:xf #(conj % :xf4)}])
+          apply-xf (fn [x]
+                     (let [{:keys [data] :as x'} (p/apply-xf x)]
+                       (cond-> x'
+                         (and (even? (first data))
+                              (< (count data) 3)) (assoc :pipe pipe2))))]
+      (is (= [[0 :xf1 :xf3 :xf4]
+              [1 :xf1 :xf2]
+              [2 :xf1 :xf3 :xf4]
+              [3 :xf1 :xf2]
+              [4 :xf1 :xf3 :xf4]]
+             (->> (p/flow (u/channeled (map vector (range 5)))
+                          pipe1
+                          (p/worker 1  {:apply-xf apply-xf}))
+                  extract-results
+                  :result
+                  (sort-by first))))))
   )
 
 (deftest log-test
@@ -316,16 +357,72 @@
                                                    :enqueue  catch-ex/enqueue}))
                               extract-results)
                          @log-events)]
-      (is (<= (count log-events-1) (count log-events-2)))))
-
-  )
+      (is (<= (count log-events-1) (count log-events-2))))))
 
 (deftest channeled-test
+  (testing "channeled takes a channel, collection, BufferedReader or a
+  function (returning any of these) and returns a channel with the the input"
+    (let [source (a/chan)
+          c (u/channeled source)]
+      (a/go
+        (dotimes [i 5]
+          (a/>! source i))
+        (a/close! source))
+      (is (=  (a/<!! (a/into [] c)) [0 1 2 3 4])))
+    (let [source (a/chan)
+          c (u/channeled source 3)]
+      (a/go
+        (dotimes [i 5]
+          (a/>! source i))
+        (a/close! source))
+      (is (=  (a/<!! (a/into [] c)) [0 1 2])))
+    (let [source (a/chan)
+          c (u/channeled (fn [] source) 3)]
+      (a/go
+        (dotimes [i 5]
+          (a/>! source i))
+        (a/close! source))
+      (is (=  (a/<!! (a/into [] c)) [0 1 2])))
 
+    (let [source (range 6)
+          c (u/channeled source)]
+      (is (= (a/<!! (a/into [] c)) [0 1 2 3 4 5])))
+    (let [source (range 6)
+          c (u/channeled source 3)]
+      (is (= (a/<!! (a/into [] c)) [0 1 2])))
+    (let [source (fn [] (range 6))
+          c (u/channeled source 3)]
+      (is (= (a/<!! (a/into [] c)) [0 1 2])))
 
-  )
+    (let [source (u/channeled (io/reader "resources/test.csv"))
+          c (u/channeled source)]
+      (is (= (a/<!! (a/into [] c)) ["foo,bar" "1,2" "3,4"])))
+    (let [source (u/channeled (io/reader "resources/test.csv") 2)
+          c (u/channeled source)]
+      (is (= ["foo,bar" "1,2"] (a/<!! (a/into [] c)))))
+    (let [source (u/channeled (fn [] (io/reader "resources/test.csv")) 2)
+          c (u/channeled source)]
+      (is (= ["foo,bar" "1,2"] (a/<!! (a/into [] c)))))))
+
+(deftest csv-xf-test
+  (testing "Sourcing csv file"
+    (let [source (u/channeled (io/reader "resources/test.csv")) ]
+      (is (= [{:foo :bar
+               :bar "2"}
+              {:foo :bar
+               :bar "4"}] (->> (p/flow source
+                                       (p/as-pipe [{:xf (u/csv-xf 1000 source)}
+                                                   {:xf #(assoc % :foo :bar)}])
+                                       (p/worker 1))
+                               extract-results
+                               :result
+                               (sort-by :bar)))))))
 
 (comment
+ (future
+   )
+
+
   (let [source                            (u/channeled (map #(hash-map :id %) (range 5)))
         pipe                              (p/as-pipe [{:xf #(assoc % :step-1 true)}
                          {:xf #(assoc % :step-2 true)}])
@@ -387,5 +484,34 @@
     (ms->duration (+ (* 62 60 1000) 1000))
 
 
+    )
+  )
+
+(comment
+  (let [source (a/chan)
+        c (u/channeled source)]
+    (a/go
+      (dotimes [i 5]
+        (a/>! source i))
+      (a/close! source))
+    (future
+      (tap> {:?? (a/<!! (a/into [] c))})
+      ;; (tap> {:result-c (a/<!! r)})
+      )
+    )
+
+  (let [source (range 3)
+        c (u/channeled source)]
+    (future
+      (tap> {:?? (a/<!! (a/into [] c))})
+      ;; (tap> {:result-c (a/<!! r)})
+      )
+    )
+  (let [source (u/channeled (io/reader "resources/test.csv") 3)
+        c (u/channeled source)]
+    (future
+      (tap> {:?? (a/<!! (a/into [] c))})
+      ;; (tap> {:result-c (a/<!! r)})
+      )
     )
   )

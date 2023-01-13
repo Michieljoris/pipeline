@@ -11,9 +11,12 @@
    [taoensso.timbre :as log])
   )
 
+;; TODO finish tests
+;; TODO finish specs
 
 ;; TODO: clean up dev
 ;; TODO: write readme
+
 
 ;; TODO: Calculate ratio of blocking vs working and log as job is running and take blocking quotient into account!!!!
 ;; TODO: Adjust number of threads on the fly!!!!
@@ -25,40 +28,36 @@
  ;; TODO: add throttler
 
 ;; ------- test/showcase functionality
-;; TODO: add tests
-;; TODO: merge xfs if they indicate they don't return multiple results
 ;; TODO: log estimate on likely duration of job
 ;; TODO add stats examples
-;; TODO: test changing pipe in wrapper
-;; TODO test running several flows with the same threads at the same time
-;; TODO: test assigning different pipe to each source elementt
 
 (comment
-  (let [start-time   (stat/now)
-        source (u/channeled (map #(hash-map :id %) (range 5)) 2)
-        source (u/channeled (io/reader "resources/test.csv") 3)
-        row->map (u/csv-xf source 1000)
-        xfs [{:xf row->map
-              :log-count (u/log-count tap> "Processed first xf" 20)}
-             {:xf #(assoc % :step-1 true)}
-             {:xf #(assoc % :step-2 true)}]
-        thread-count 10
-        wrapper (fn [{:keys [pipe data] :as x}]
-                  ((:log-count pipe #(do)))
-                  (-> (update x :transforms (fnil conj []) data)
-                      p/update-x))
-        halt (a/chan)
-        thread-hook (fn [thread-i] (tap> {:thread-i thread-i}))
-        thread-hook #(u/block-on-pred % (atom 5) > halt 1000)
-        worker (p/worker thread-count {:update-x wrapper
-                                       :thread-hook thread-hook
-                                       :halt halt})
-        out (p/flow source (p/as-pipe xfs) worker)]
+ (future
+   (let [start-time   (stat/now)
+         source (u/channeled (map #(hash-map :id %) (range 5)) 2)
+         source (u/channeled (io/reader "resources/test.csv") 3)
+         row->map (u/csv-xf 1000 source)
+         xfs [{:xf row->map
+               :log-count (u/log-count tap> "Processed first xf" 20)}
+              {:xf #(assoc % :step-1 true)}
+              {:xf #(assoc % :step-2 true)}]
+         thread-count 10
+         ;; wrapper (fn [{:keys [pipe data] :as x}]
+         ;;           ((:log-count pipe #(do)))
+         ;;           (-> (update x :transforms (fnil conj []) data)
+         ;;               p/update-x))
+         halt (a/chan)
+         thread-hook (fn [thread-i] (tap> {:thread-i thread-i}))
+         thread-hook #(u/block-on-pred % (atom 5) > halt 1000)
+         worker (p/worker thread-count { ;; :update-x wrapper
+                                        :thread-hook thread-hook
+                                        :halt halt})
+         out (p/flow source (p/as-pipe xfs) worker)]
 
-    (doseq [[status p] (u/as-promises out)]
-      (future (tap> {status    (if (keyword? @p) @p @p)
-                     :duration (/ (- (stat/now) start-time) 1000.0)})))
-    ))
+     (doseq [[status p] (u/as-promises out)]
+       (future (tap> {status    (if (keyword? @p) @p @p)
+                      :duration (/ (- (stat/now) start-time) 1000.0)})))
+     )))
 
 (-> (with-meta {:a 1} {:some :meta})
     (assoc :b 2)
@@ -96,7 +95,7 @@
 ;;                                  stat-maps))))
 
 
-(u/assert-spec ::p/source (io/reader "readme.org"))
+;; (u/assert-spec ::p/source (io/reader "readme.org"))
 
 ;; (let [s (u/channeled (io/reader "readme.org") nil 3)]
 ;;   (a/go-loop []

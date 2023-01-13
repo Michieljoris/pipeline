@@ -1,7 +1,6 @@
 (ns pipeline.util
   (:require [clojure.core.async :as a]
             [clojure.core.async.impl.protocols :as async-impl]
-            [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [taoensso.timbre :as log]))
 
@@ -34,11 +33,13 @@
                               new-t
                               old-t)))]
         (when (not= old-t new-t)
-          (log [msg :cnt @cnt :duration (ms->duration (- new-t start))])
+          (log [msg :cnt @cnt :elapsed (ms->duration (- new-t start))])
           (swap! cnt inc))))))
 
 (defn combine-xfs
-   "TODO"
+  "Takes a collection of xf maps and combines and reduces the number of
+   transforming functions through composition. Xf maps that have :mult key set
+   to true are not composed with the following xf."
   [xfs]
   (let [{:keys [last-xf xfs]}
         (reduce (fn [{:keys [last-xf] :as acc} xf]
@@ -104,7 +105,8 @@
           (recur))))))
 
 (defn as-promises
-  "TODO"
+  "Returns a map with two promises, result and nil-result that deliver all
+   elements as taken from out."
   [out]
   (let [promises {:result (promise) :nil-result (promise)}]
     (a/go-loop [collect nil]
@@ -116,7 +118,7 @@
     promises))
 
 (defn as-promise
-  "TODO"
+  "Returns promise that delivers all results taken from out."
   [out]
   (let [p (promise)]
     (a/go-loop [collect nil]
@@ -144,9 +146,10 @@
   "Takes a csv-source channel, reads the first (headers) element and returns a
    function that will take row elements and returns maps with the headers as
    keywords. Throws if channel is closed or is blocked for ms milliseconds"
-  [csv-source ms]
+  [ms csv-source]
   (if-let [[header-str _] (a/alts!! [csv-source (a/timeout ms)])]
     (let [headers (map keyword (str/split header-str #","))]
+      (tap> {:headers headers  })
       (fn [row]
         (let [columns (str/split row #",")]
           (zipmap headers columns))))

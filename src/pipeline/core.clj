@@ -1,24 +1,26 @@
 (ns pipeline.core
   (:require [clojure.core.async :as a]
             [clojure.spec.alpha :as s]
+            [clojure.spec.test.alpha :as stest]
             [pipeline.util :as u]))
 
 (defn apply-xf
-  "Calls the pipe's xf function on data and updates pipe to the next one."
+  "Default implementation. Calls the pipe's xf function on data and updates pipe
+   to the next one."
   [{:keys [data pipe] :as x}]
   (merge x {:data ((:xf pipe) data)
             :pipe (:next pipe)}))
 
 (defn queue?
-  "Decide on queuing for further processing."
+  "Default implementation. Decide on queuing for further processing."
   [pipe data]
   (not (or (empty? pipe)
            (nil? data))))
 
 (defn enqueue
-  "Enqueue x on the appropriate queue. Queueing should block in a go thread.
-   check-in should be called before every queueing, check-out should be called
-   after all results are queued"
+  "Default implementation. Enqueue x on the appropriate queue. Queueing should
+   block in a go thread. check-in should be called before every queueing,
+   check-out should be called after all results are queued"
   [{:keys [data pipe] :as x} queues]
   (let [{:keys [check-in check-out out]} (meta x)
         queue (get queues (:i pipe))]
@@ -59,13 +61,15 @@
    (->> xfs (map-indexed #(assoc %2 :i (+ offset %1))) u/linked-list)))
 
 (defn flow
-   "Flows in through the pipe using worker, producing 1 or more outputs per input.
-   Results are put on the returned out channel, which can be passed. The pipe
-   gets assoced with every input element and is used by the threads to apply the
+  "Flows in through the pipe using worker, producing 1 or more outputs per input.
+   Results are put on the returned out channel, which can be passed in. The
+   pipe (or the result of calling pipe on source if pipe is a function) gets
+   assoced with every input element and is used by the threads to apply the
    right transformation. Results are unordered relative to input. By default,
-   the to channel will be closed when the from channel closes, but can be
-   determined by the close? parameter. Will stop consuming the in channel if the
-   out channel closes."
+   the out channel will be closed when the in channel closes (once all
+   processing is done), but this can be determined by the close? parameter.
+   Consumes from the in channel as long as data is taken from the out channel or
+   until out channel is closed (once all processing is done)."
   ([in pipe worker] (flow in pipe worker nil))
   ([in pipe worker {:keys [out close?] :or {close? true out (a/chan)}}]
    (let [monitor (atom 0)
@@ -84,27 +88,48 @@
        (check-out))
      out)))
 
-(s/def ::f fn?)
-(s/def ::wrapped-f fn?)
-(s/def ::mult (s/nilable boolean))
+;;TODO: finish specs
+(s/def ::xf fn?)
+(s/def ::apply-xf fn?)
+(s/def ::enqueue fn?)
+(s/def ::thread-hook  fn?)
 (s/def ::thread-count pos-int?)
 (s/def ::queue-count pos-int?)
 (s/def ::chan #(instance? clojure.core.async.impl.channels.ManyToManyChannel %))
 (s/def ::halt ::chan)
-(s/def ::queue ::chan)
-(s/def ::queues (s/coll-of ::queue))
-(s/def ::xf (s/keys :req-un [::f]
-                    :opt-un [::mult]))
+(s/def ::xf (s/keys :req-un [::xf]))
+(s/def ::next (s/nilable ::pipe))
+(s/def ::pipe (s/keys :req-un [::xf ::next]))
 (s/def ::xfs (s/and (s/coll-of ::xf) seq))
-(s/def ::pipeline-xf (s/keys :req-un [::wrapped-f ::queue]
-                             :opt-un [::mult]))
-(s/def ::pipeline-xfs (s/and (s/coll-of ::pipeline-xf) seq))
-(s/def ::threads-args (s/keys :req-un [::thread-count ::queue-count]
-                              :opt-un [::process-hook])) ;;TODO
-
-(s/def ::pipeline-args (s/keys :req-un [::xfs ::queues]
-                               :opt-un [::hooks])) ;;TODO
-
 (s/def ::source (s/or :buffered-reader u/buffered-reader?  :coll coll? :channel u/channel? :fn fn?))
+(s/def ::worker-opts (s/keys :opt-un [::queue-count ::thread-hook ::halt ::apply-xf ::enqueue]))
 
-(s/def ::flow-args (s/keys :req-un [::source ::pipeline-xfs]))
+(s/fdef worker
+  :args (s/cat  :thread-count ::thread-count
+                :opts ::worker-opts)
+  :ret ::chan)
+
+(s/fdef as-pipe
+  :args (s/cat  :xfs ::xfs
+                ::ofsett pos-int?)
+  :ret ::pipe)
+
+(s/fdef flow
+  :args (s/cat  :in ::chan
+                :pipe ::pipe
+                :worker ::chan
+                :opts ::flow-opts)
+  :ret ::chan)
+
+;; (stest/instrument
+;;  `[worker
+;;    as-pipe
+;;    flow])
+
+
+(comment
+  (worker 1 nil))
+   ;; (u/assert-spec ::worker-args {:thread-count thread-count :opts opts} )
+
+  ;; (s/alt :nullary (s/cat)
+  ;;              :unary (s/cat :config ::config))
