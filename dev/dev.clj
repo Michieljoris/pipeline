@@ -13,20 +13,22 @@
 
 ;; TODO finish tests
 ;; TODO finish specs
+;; TODO: finish readme
 
 ;; TODO: clean up dev
-;; TODO: write readme
 
-
+;; Setting thread count
 ;; TODO: Calculate ratio of blocking vs working and log as job is running and take blocking quotient into account!!!!
 ;; TODO: Adjust number of threads on the fly!!!!
 ;; TODO: auto adjust thread count to max throughput, minimal threads, then set to 80% for example
 
+;; Testing for real
  ;; TODO: test with real pipeline.
- ;; TODO: benchmark!!!!
+ ;; TODO: benchmark and instrument!!!!
  ;; TODO: inspect all current saigo pipelines, and document, and see if they can use this
  ;; TODO: add throttler
 
+;; Stats
 ;; ------- test/showcase functionality
 ;; TODO: log estimate on likely duration of job
 ;; TODO add stats examples
