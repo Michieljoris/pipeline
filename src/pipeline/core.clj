@@ -5,8 +5,8 @@
             [pipeline.util :as u]))
 
 (defn apply-xf
-  "Default implementation. Calls the pipe's xf function on data and updates pipe
-   to the next one."
+  "Default implementation. Calls the pipe's xf function on wrapped data and
+   updates pipe to the next one."
   [{:keys [data pipe] :as x}]
   (merge x {:data ((:xf pipe) data)
             :pipe (:next pipe)}))
@@ -34,11 +34,11 @@
 (defn worker
   "Starts up thread-count threads, and creates queue-count queue channels. Each
    thread is set up to process data as put on the queues. Returns the first of
-   the queues. Halt when closed stops all threads. The thread-hook function gets
+   the queues. Halt when closed stops all threads. The hook function gets
    called with the thread number every time the thread starts any new work."
   ([thread-count] (worker thread-count nil))
-  ([thread-count {:keys [queue-count thread-hook halt apply-xf enqueue]
-                  :or   {thread-hook u/noop halt (a/chan) queue-count 100
+  ([thread-count {:keys [queue-count hook halt apply-xf enqueue]
+                  :or   {hook u/noop halt (a/chan) queue-count 100
                          enqueue enqueue
                          apply-xf apply-xf}}]
    (let [queues (->> (repeatedly a/chan) (take queue-count) vec)
@@ -46,7 +46,7 @@
      (dotimes [thread-i thread-count]
        (a/thread
          (loop []
-           (thread-hook thread-i)
+           (hook thread-i)
            (let [[x _] (a/alts!! p-queues :priority true)]
              (when x
                (enqueue (apply-xf x) queues)
@@ -92,7 +92,7 @@
 (s/def ::xf fn?)
 (s/def ::apply-xf fn?)
 (s/def ::enqueue fn?)
-(s/def ::thread-hook  fn?)
+(s/def ::hook  fn?)
 (s/def ::thread-count pos-int?)
 (s/def ::queue-count pos-int?)
 (s/def ::chan #(instance? clojure.core.async.impl.channels.ManyToManyChannel %))
@@ -101,8 +101,8 @@
 (s/def ::next (s/nilable ::pipe))
 (s/def ::pipe (s/keys :req-un [::xf ::next]))
 (s/def ::xfs (s/and (s/coll-of ::xf) seq))
+(s/def ::worker-opts (s/keys :opt-un [::queue-count ::hook ::halt ::apply-xf ::enqueue]))
 (s/def ::source (s/or :buffered-reader u/buffered-reader?  :coll coll? :channel u/channel? :fn fn?))
-(s/def ::worker-opts (s/keys :opt-un [::queue-count ::thread-hook ::halt ::apply-xf ::enqueue]))
 
 (s/fdef worker
   :args (s/cat  :thread-count ::thread-count

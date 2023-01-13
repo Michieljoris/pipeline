@@ -34,6 +34,14 @@
 ;; TODO add stats examples
 
 (comment
+
+  (a/thread
+    (tap> :start)
+    ;; (tap> {:timeout (a/<!! (a/timeout 50000))})
+    (Thread/sleep 1000)
+    (tap> :end)
+    )
+
  (future
    (let [start-time   (stat/now)
          source (u/channeled (map #(hash-map :id %) (range 5)) 2)

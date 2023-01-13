@@ -95,11 +95,11 @@
              n (a/take n)))))))
 
 (defn block-on-pred
-   "Polls the b atom every ms milliseconds, returns when (pred a @b) returns false
+  "Polls the b atom every ms milliseconds, returns when (pred a) returns false
    or when halt channel is closed."
-  [a b pred halt ms]
+  [a pred halt ms]
   (loop []
-    (when (pred a @b)
+    (when (pred a)
       (let [[_ c] (a/alts!! [(a/timeout ms) halt]) ]
         (when (not= c halt)
           (recur))))))

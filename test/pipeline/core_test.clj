@@ -14,7 +14,8 @@
 
 ;; TEST:
 ;;- adjust thread count on the fly
-;;- combine-xfs
+;;- DONE combine-xfs
+;;- DONE use version of apply-xf fn  that doesn't wrap x
 
 ;;- DONE change pipe mid job for an x.
 ;;- DONE set different pipe for every source element
@@ -59,19 +60,15 @@
   (= a b))
 
 (comment
+
  (future
-   (let [pipe2 (p/as-pipe [{:xf #(conj % :xf3)}
-                           {:xf #(conj % :xf4)}])
-         apply-xf (fn [x]
-                    (let [{:keys [data] :as x'} (p/apply-xf x)]
-                      (cond-> x'
-                        (and (even? (first data))
-                             (< (count data) 3)) (assoc :pipe pipe2))))]
+   (let [thread-atom (atom 1)
+         pred (fn [thread-i] (=  thread-i 1)) ;;TODO how to check which thread was used for an xf and x?
+         worker (p/worker 1  {:hook #(u/block-on-pred % pred (a/chan) 1000)})]
      (->> (p/flow (u/channeled (map vector (range 5)))
-                  (p/as-pipe [{:xf #(conj % :xf1)}
-                              {:xf #(conj % :xf2)}])
-                  (p/worker 1  {:apply-xf apply-xf}
-                            ))
+                  (p/as-pipe [{:xf inc}
+                              {:xf inc}])
+                  worker)
           extract-results
           tap>))
 
@@ -313,6 +310,20 @@
                   extract-results
                   :result
                   (sort-by first))))))
+  (testing "Don't wrap data"
+    (let [apply-xf (fn [x]
+                     (let [{:keys [pipe] :as x'} ((->> x :pipe :xf) x) ]
+                       (assoc x' :pipe (:next pipe))))]
+      (is (= '([0 :xf1 :xf2] [1 :xf1 :xf2] [2 :xf1 :xf2])
+             (->> (p/flow (u/channeled (map vector (range 3)))
+                          (p/as-pipe [{:xf #(update % :data conj :xf1)}
+                                      {:xf #(update % :data conj :xf2)}])
+                          (p/worker 1  {:apply-xf apply-xf}))
+                  extract-results
+                  :result
+                  (sort-by first)
+                  )))))
+
   )
 
 (deftest log-test
@@ -417,6 +428,20 @@
                                extract-results
                                :result
                                (sort-by :bar)))))))
+
+(deftest combine-xfs
+  (testing "Combining list xfs"
+    (let [combined-xf (u/combine-xfs [{:xf inc}
+                                      {:xf inc}])]
+      (is (= 2 ((->> combined-xf first :xf) 0)))
+
+      (let [combined-xf (u/combine-xfs [{:xf inc}
+                                        {:xf inc :mult true}
+                                        {:xf inc}])]
+        (is (= 2 (count combined-xf) ))
+        (is (= 2 ((->> combined-xf first :xf) 0)))
+        (is (= 1 ((->> combined-xf second :xf) 0)))))))
+
 
 (comment
  (future
