@@ -4,22 +4,6 @@
             [clojure.spec.test.alpha :as stest]
             [pipeline.util :as u]))
 
-(defn apply-xf
-  "Default implementation. Calls the pipe's xf function on wrapped data and
-   updates pipe to the next one."
-  [{:keys [data pipe] :as x}]
-  (merge x {:data ((:xf pipe) data)
-            :pipe (:next pipe)}))
-
-;; (defn apply-xf-c
-;;   "Default implementation. Calls the pipe's xf function on wrapped data and
-;;    updates pipe to the next one."
-;;   [{:keys [data pipe] :as x}]
-;;   (let [r (merge x {:data ((:xf pipe) data)
-;;                     :pipe (:next pipe)})]
-;;     (tap> {:apply-xf-c x :result r})
-;;     (a/to-chan! [r])))
-
 (defn apply-xf-c
   "Actually calls the xf function on data and updates pipe to the next one.
    Handler functions passed to wrapper together with x"
@@ -31,16 +15,7 @@
                      [result]))
                  (catch Throwable t [t]))
         x' (assoc x :pipe (:next pipe))]
-    (a/to-chan! (map #(assoc x' :data %) result)))
-
-  ;; (merge x {:data (try
-  ;;                   (let [result (xf data)]
-  ;;                     (if mult
-  ;;                       (if (seq result) result [nil])
-  ;;                       [result]))
-  ;;                   (catch Throwable t [t]))
-  ;;           :pipe (:next pipe)})
-  )
+    (a/to-chan! (map #(assoc x' :data %) result))))
 
 (defn queue?
   "Default implementation. Decide on queuing for further processing."
@@ -66,50 +41,7 @@
           (recur))
         (check-out))))
 
-;; (defn enqueue
-;;   "Default implementation. Enqueue x on the appropriate queue. Queueing should
-;;    block in a go thread. check-in should be called before every queueing,
-;;    check-out should be called after all results are queued"
-;;   [{:keys [data pipe] :as x} queues]
-;;   (let [{:keys [check-in check-out out]} (meta x)
-;;         queue (get queues (:i pipe))]
-;;     (a/go
-;;       (if (queue? pipe data)
-;;         (do  (check-in)
-;;              (a/>! queue x))
-;;         (a/>! out x))
-;;       (check-out))))
-
-(defn worker
-  "Starts up thread-count threads, and creates queue-count queue channels. Each
-   thread is set up to process data as put on the queues. Returns the first of
-   the queues. Halt when closed stops all threads. The hook function gets
-   called with the thread number every time the thread starts any new work."
-  ([thread-count] (worker thread-count nil))
-  ([thread-count {:keys [queue-count hook halt apply-xf enqueue]
-                  :or   {hook u/noop halt (a/chan) queue-count 100
-                         enqueue enqueue-c
-                         apply-xf apply-xf-c}}]
-   (let [queues (->> (repeatedly a/chan) (take queue-count) vec)
-         p-queues (reverse (into [halt] queues))]
-     (dotimes [thread-i thread-count]
-       (a/thread
-         (loop []
-           (hook thread-i)
-           (let [[x _] (a/alts!! p-queues :priority true)]
-             (when x
-               (enqueue (apply-xf x) queues (meta x))
-               (recur))))))
-     (first queues))))
-
-(defn as-pipe
-  "Prepares xfs (list of maps, each having at least a single argument function
-   under the :xf key) so that it can be passed to the flow function."
-  ([xfs] (as-pipe xfs 0))
-  ([xfs offset]
-   (->> xfs (map-indexed #(assoc %2 :i (+ offset %1))) u/linked-list)))
-
-(defn flow
+(defn flow-impl
   "Flows in through the pipe using worker, producing 1 or more outputs per input.
    Results are put on the returned out channel, which can be passed in. The
    pipe (or the result of calling pipe on source if pipe is a function) gets
@@ -119,26 +51,74 @@
    processing is done), but this can be determined by the close? parameter.
    Consumes from the in channel as long as data is taken from the out channel or
    until out channel is closed (once all processing is done)."
-  ([in pipe worker] (flow in pipe worker nil))
-  ([in pipe worker {:keys [out close?] :or {close? true out (a/chan)}}]
-   (let [monitor (atom 0)
-         check-in #(swap! monitor inc)
-         check-out #(when (and (zero? (swap! monitor dec)) close?)
-                      (a/close! out))
-         wrapped-x (with-meta {} {:check-in check-in :check-out check-out :out out})
-         pipe-fn (if (fn? pipe) pipe (constantly pipe))]
-     ;; (add-watch monitor :k (fn [_ _ _ v]
-     ;;                         (tap> {:monitor v})
-     ;;                         ))
-     (check-in)
-     (a/go
-       (loop []
-         (when-let [data (a/<! in)]
-           (check-in)
-           (when (a/>! worker (assoc wrapped-x :data data :pipe (pipe-fn data)) )
-             (recur))))
-       (check-out))
-     out)))
+  [worker in pipe {:keys [out close?] :or {close? true out (a/chan)}}]
+  (let [monitor (atom 0)
+        check-in #(swap! monitor inc)
+        check-out #(when (and (zero? (swap! monitor dec)) close?)
+                     (a/close! out))
+        wrapped-x (with-meta {} {:check-in check-in :check-out check-out :out out})
+        pipe-fn (if (fn? pipe) pipe (constantly pipe))]
+    (check-in)
+    (a/go
+      (loop []
+        (when-let [data (a/<! in)]
+          (check-in)
+          (when (a/>! worker (assoc wrapped-x :data data :pipe (pipe-fn data)) )
+            (recur))))
+      (check-out))
+    out))
+
+(defn as-pipe
+  "Prepares xfs (list of maps, each having at least a single argument function
+   under the :xf key) so that it can be passed to the flow function."
+  ([xfs] (as-pipe xfs 0))
+  ([xfs offset]
+   (->> xfs (map-indexed #(assoc %2 :i (+ offset %1))) u/linked-list)))
+
+(defprotocol Threads
+ (inc-thread-count [this])
+ (dec-thread-count [this])
+ (start-thread [this])
+ (stop-all [this])
+ (flow [this in pipe] [this in pipe opts]))
+
+(defrecord Worker [state queues enqueue apply-xf]
+  Threads
+  (inc-thread-count [this]
+    (swap! state conj (start-thread this)))
+  (dec-thread-count [threads]
+    (when-let [halt (first @state)]
+      (swap! state rest)
+      (a/close! halt)))
+  (start-thread [this]
+    (let [halt (a/chan)
+          p-queues (into [halt] (reverse queues))]
+      (a/thread
+        (loop []
+          (let [[x _] (a/alts!! p-queues :priority true)]
+            (when x
+              (enqueue (apply-xf x) queues (meta x))
+              (recur)))))
+      halt))
+  (stop-all [this]
+    (doseq [halt @state] (a/close! halt)))
+  (flow [this in pipe] (flow this in pipe nil))
+  (flow [this in pipe opts] (flow-impl (first queues) in pipe opts)))
+
+(defn worker
+  "Starts up thread-count threads, and creates queue-count queue channels. Each
+   thread is set up to process data as put on the queues."
+  ([thread-count] (worker thread-count nil))
+  ([thread-count {:keys [queue-count apply-xf enqueue]
+                  :or   {queue-count 100
+                         enqueue     enqueue-c
+                         apply-xf    apply-xf-c}}]
+   (let [this-worker (map->Worker {:queues   (->> (repeatedly a/chan) (take queue-count) vec)
+                                   :state    (atom [])
+                                   :enqueue  enqueue
+                                   :apply-xf apply-xf})]
+     (dotimes [_ thread-count] (inc-thread-count this-worker))
+     this-worker)))
 
 ;;TODO: finish specs
 (s/def ::xf fn?)
