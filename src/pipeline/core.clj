@@ -11,25 +11,74 @@
   (merge x {:data ((:xf pipe) data)
             :pipe (:next pipe)}))
 
+;; (defn apply-xf-c
+;;   "Default implementation. Calls the pipe's xf function on wrapped data and
+;;    updates pipe to the next one."
+;;   [{:keys [data pipe] :as x}]
+;;   (let [r (merge x {:data ((:xf pipe) data)
+;;                     :pipe (:next pipe)})]
+;;     (tap> {:apply-xf-c x :result r})
+;;     (a/to-chan! [r])))
+
+(defn apply-xf-c
+  "Actually calls the xf function on data and updates pipe to the next one.
+   Handler functions passed to wrapper together with x"
+  [{:keys [data pipe] {:keys [xf mult]} :pipe :as x}]
+  (let [result (try
+                 (let [result (xf data)]
+                   (if mult
+                     (if (seq result) result [nil])
+                     [result]))
+                 (catch Throwable t [t]))
+        x' (assoc x :pipe (:next pipe))]
+    (a/to-chan! (map #(assoc x' :data %) result)))
+
+  ;; (merge x {:data (try
+  ;;                   (let [result (xf data)]
+  ;;                     (if mult
+  ;;                       (if (seq result) result [nil])
+  ;;                       [result]))
+  ;;                   (catch Throwable t [t]))
+  ;;           :pipe (:next pipe)})
+  )
+
 (defn queue?
   "Default implementation. Decide on queuing for further processing."
   [pipe data]
   (not (or (empty? pipe)
            (nil? data))))
 
-(defn enqueue
+(defn enqueue-c
   "Default implementation. Enqueue x on the appropriate queue. Queueing should
    block in a go thread. check-in should be called before every queueing,
    check-out should be called after all results are queued"
-  [{:keys [data pipe] :as x} queues]
-  (let [{:keys [check-in check-out out]} (meta x)
-        queue (get queues (:i pipe))]
-    (a/go
-      (if (queue? pipe data)
-        (do  (check-in)
-             (a/>! queue x))
-        (a/>! out x))
-      (check-out))))
+  [result-channel queues {:keys [check-in check-out out]}
+   ;; {:keys [data pipe] :as x} queues
+   ]
+  (a/go-loop []
+      (if-let [{:keys [data pipe] :as x} (a/<! result-channel)]
+        (do
+          (let [queue (get queues (:i pipe))]
+            (if (queue? pipe data)
+              (do  (check-in)
+                   (a/>! queue x))
+              (a/>! out x)))
+          (recur))
+        (check-out))))
+
+;; (defn enqueue
+;;   "Default implementation. Enqueue x on the appropriate queue. Queueing should
+;;    block in a go thread. check-in should be called before every queueing,
+;;    check-out should be called after all results are queued"
+;;   [{:keys [data pipe] :as x} queues]
+;;   (let [{:keys [check-in check-out out]} (meta x)
+;;         queue (get queues (:i pipe))]
+;;     (a/go
+;;       (if (queue? pipe data)
+;;         (do  (check-in)
+;;              (a/>! queue x))
+;;         (a/>! out x))
+;;       (check-out))))
 
 (defn worker
   "Starts up thread-count threads, and creates queue-count queue channels. Each
@@ -39,8 +88,8 @@
   ([thread-count] (worker thread-count nil))
   ([thread-count {:keys [queue-count hook halt apply-xf enqueue]
                   :or   {hook u/noop halt (a/chan) queue-count 100
-                         enqueue enqueue
-                         apply-xf apply-xf}}]
+                         enqueue enqueue-c
+                         apply-xf apply-xf-c}}]
    (let [queues (->> (repeatedly a/chan) (take queue-count) vec)
          p-queues (reverse (into [halt] queues))]
      (dotimes [thread-i thread-count]
@@ -49,7 +98,7 @@
            (hook thread-i)
            (let [[x _] (a/alts!! p-queues :priority true)]
              (when x
-               (enqueue (apply-xf x) queues)
+               (enqueue (apply-xf x) queues (meta x))
                (recur))))))
      (first queues))))
 
@@ -78,6 +127,9 @@
                       (a/close! out))
          wrapped-x (with-meta {} {:check-in check-in :check-out check-out :out out})
          pipe-fn (if (fn? pipe) pipe (constantly pipe))]
+     ;; (add-watch monitor :k (fn [_ _ _ v]
+     ;;                         (tap> {:monitor v})
+     ;;                         ))
      (check-in)
      (a/go
        (loop []

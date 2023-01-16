@@ -62,6 +62,18 @@
 (comment
 
  (future
+   (tap> (->> (p/flow (u/channeled (range 1))
+                      (p/as-pipe [{:xf (fn [data]
+                                         [(inc data) (inc data)])
+                                   :mult true}
+                                  {:xf inc}])
+                      (p/worker 1 ;; {:apply-xf (apply-xf-fn p/apply-xf)}
+                                ))
+              extract-raw-results))
+
+   )
+
+ (future
    (let [thread-atom (atom 1)
          pred (fn [thread-i] (=  thread-i 1)) ;;TODO how to check which thread was used for an xf and x?
          worker (p/worker 1  {:hook #(u/block-on-pred % pred (a/chan) 1000)})]
