@@ -127,6 +127,18 @@
         (deliver p collect)))
     p))
 
+(defn sink
+  "Returns an atom containing a vector. Consumes values from channel
+  ch and conj's them into the atom."
+  [ch]
+  (let [a (atom [])]
+    (a/go-loop []
+      (let [val (a/<! ch)]
+        (when-not (nil? val)
+          (swap! a conj val)
+          (recur))))
+    a))
+
 (defn >!!null
   "Reads and discards all values read from c"
   [c]
