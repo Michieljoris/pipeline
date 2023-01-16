@@ -1,10 +1,17 @@
-{:paths ["src"]
- :deps  {clj-time/clj-time                   {:mvn/version "0.15.1"}
-         clojure.java-time/clojure.java-time {:mvn/version "0.3.2"}
-         com.stuartsierra/frequencies        {:mvn/version "0.1.0"}
-         com.taoensso/timbre                 {:mvn/version "4.10.0"}
-         org.clojure/clojure                 {:mvn/version "1.10.1"}
-         org.clojure/core.async              {:mvn/version "1.2.603"}
-         org.clojure/core.memoize            {:mvn/version "0.5.8"}
-         org.clojure/data.csv                 {:mvn/version "_"},
-         org.clojure/tools.namespace         {:mvn/version "0.2.11"}}}
+{:paths   ["src"]
+ :deps    {clj-time/clj-time                   {:mvn/version "0.15.1"}
+           clojure.java-time/clojure.java-time {:mvn/version "0.3.2"}
+           com.stuartsierra/frequencies        {:mvn/version "0.1.0"}
+           com.taoensso/timbre                 {:mvn/version "4.10.0"}
+           org.clojure/clojure                 {:mvn/version "1.10.1"}
+           org.clojure/core.async              {:mvn/version "1.2.603"}
+           org.clojure/core.memoize            {:mvn/version "0.5.8"}
+           org.clojure/data.csv                {:mvn/version "1.0.1"}
+           org.clojure/tools.namespace         {:mvn/version "0.2.11"}}
+ :aliases {:dev {:extra-paths ["dev"]
+                 ;; :extra-deps  {com.stuartsierra/component      {:mvn/version "_"}
+                 ;;               com.stuartsierra/component.repl {:mvn/version "_"}
+                 ;;               org.clojure/tools.namespace     {:mvn/version "_"}}
+                 }
+           }
+ }

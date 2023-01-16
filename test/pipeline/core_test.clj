@@ -60,15 +60,46 @@
   (= a b))
 
 (comment
+  (future
+    (let [result-channel (a/chan)
+          task (p/enqueue-c result-channel {:check-out #(tap> :checking-out)})]
+      (a/go
+        (a/>!! result-channel 1)
+        (a/>!! result-channel 2)
 
+        (a/close! result-channel))
+
+      (a/go-loop []
+        (if-let [v (a/<! task)]
+          (do (tap> {:value-from-task v})
+              (recur)
+              )
+          (tap> :task-closed)
+          )
+        )
+
+      )
+
+
+    ))
+
+(comment
+  (future
+   (let [c (a/chan 1)]
+     (a/>!! c :foo)
+     (tap> (a/alts!! [])))
+    )
  (future
-   (tap> (->> (p/flow (u/channeled (range 1))
+   (tap> (->> (p/flow
+               (p/worker 1 ;; {:apply-xf (apply-xf-fn p/apply-xf)}
+                                )
+               (u/channeled (range 1))
                       (p/as-pipe [{:xf (fn [data]
                                          [(inc data) (inc data)])
                                    :mult true}
-                                  {:xf inc}])
-                      (p/worker 1 ;; {:apply-xf (apply-xf-fn p/apply-xf)}
-                                ))
+                                  {:xf inc}
+                                  ])
+                      )
               extract-raw-results))
 
    )
