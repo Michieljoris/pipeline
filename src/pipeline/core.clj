@@ -1,113 +1,90 @@
 (ns pipeline.core
   (:require [clojure.core.async :as a]
             [clojure.spec.alpha :as s]
-            [pipeline.protocol :as p]
             [clojure.spec.test.alpha :as stest]
             [pipeline.util :as u]))
 
 (defn apply-xf
-  "Actually calls the xf function on data and updates pipe to the next one.
-   Handler functions passed to wrapper together with x"
-  [{:keys [data pipe] {:keys [xf mult]} :pipe :as x} result-chan]
-  (let [result (try
-                 (let [result (xf data)]
-                   (if mult
-                     (if (seq result) result [nil])
-                     [result]))
-                 (catch Throwable t [t]))
-        x' (assoc x :pipe (:next pipe))]
-    (a/onto-chan! result-chan (map #(assoc x' :data %) result))))
+  "Default implementation. Calls the pipeline's xf function on wrapped data and
+   updates pipeline."
+  [{:keys [data pipeline] :as x} result]
+  (let [x' (merge x {:data     ((-> pipeline first :xf) data)
+                     :pipeline (rest pipeline)})]
+    (a/go (a/>! result x') (a/close! result))))
 
 (defn queue?
-  "Default implementation. Decide on queuing for further processing."
-  [pipe data]
-  (not (or (empty? pipe)
-           (nil? data))))
+  "Default implementation. Decide on queueing for further processing."
+  [pipeline data]
+  (tap> {:queue? pipeline :data data})
+  (and (seq pipeline) (some? data)))
 
-(defn as-pipe
-  "Prepares xfs (list of maps, each having at least a single argument function
-   under the :xf key) so that it can be passed to the flow function."
-  ([xfs] (as-pipe xfs 0))
-  ([xfs offset]
-   (->> xfs (map-indexed #(assoc %2 :i (+ offset %1))) u/linked-list)))
+(defn start-thread
+  "Applies apply-xf fn to x in a new thread. Puts itself back in the pool when
+   done. Returns channel with result."
+  [{:keys [threads]} apply-xf x]
+  (let [result (a/chan)]
+    (a/thread
+      (apply-xf x result)
+      (a/>!! threads :t))
+    result))
 
-(defn flow-impl
-  "Process messages from input in parallel Note: the order of outputs may not
-   match the order of inputs."
-  [{:keys [threads] :as w} in pipe {:keys [out close?] :or {close? true out (a/chan)}}]
+(defn flow
+  "Flow source through pipeline using worker to optionally supplied out. When
+   close? is true closes out when in closes (and processing is finished). Supply
+   optional queue? fn to decided on queuing, and optional custom apply-xf fn.
+   Returns out channel "
+  [{:keys [threads] :as worker} source pipeline
+   {:keys [out close? queue? apply-xf]
+    :or {close? true out (a/chan) apply-xf apply-xf queue? queue?}}]
   (let [monitor (atom 0)
         check-in #(swap! monitor inc)
         check-out #(when (and (zero? (swap! monitor dec)) close?)
                      (a/close! out))
-        pipe-fn (if (fn? pipe) pipe (constantly pipe))
-        input (a/chan 1 (map #(hash-map :data % :pipe (pipe-fn %))))
-        ;; input (a/chan)
-        ]
+        pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))
+        input (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %))))]
 
     (check-in)
-    ;;TODO this can be the input channel with transducer, then pipe into it.
-    (a/pipe in input)
-
-    ;; (a/go
-    ;;   (loop []
-    ;;     (when-let [data (a/<! in)]
-    ;;       (tap> {:data data})
-    ;;       (a/>! input
-    ;;             data
-    ;;             ;; {:data data :pipe (pipe-fn data)}
-    ;;             )
-    ;;       (recur)))
-    ;;   (a/close! input))
+    (a/pipe source input)
 
     (a/go-loop [inputs #{input}]
       (when (seq inputs)
-        (let [[{:keys [pipe data] :as x} input] (a/alts! (vec inputs))]
+        (let [[{:keys [pipeline data] :as x} input] (a/alts! (vec inputs))]
           (if (nil? x)
             (do
               (check-out)
               (recur (disj inputs input))) ;;end of input
-            (if (queue? pipe data)
-              (let [thread (a/<! threads)] ;;wait for thread to be available
-                (check-in)
-                (recur (conj inputs (p/start-thread w x thread))))
+            (if (queue? pipeline data)
+              (do  (a/<! threads) ;;wait for thread to be available
+                   (check-in)
+                   (recur (conj inputs (start-thread worker apply-xf x))))
               (do (a/>! out x)
                   (recur inputs)))))))
     out))
 
+(defn inc-thread-count
+  "Increase thread count of worker"
+  [{:keys [threads thread-count]}]
+  (when (a/offer! threads :t)
+    (swap! thread-count inc)))
 
+(defn dec-thread-count
+  "Decrease thread count of worker"
+  [{:keys [threads thread-count]}]
+  (let [[old new] (swap-vals! thread-count
+                              #(cond-> % (pos? %) dec))]
+    (when (< new old)
+      (a/go (a/<! threads)))))
 
-(defrecord Worker [threads thread-count apply-xf]
-  p/Threads
-  (inc-thread-count [this]
-    (when (a/offer! threads :t)
-      (swap! thread-count inc)))
-  (dec-thread-count [this]
-    (let [[old new] (swap-vals! thread-count
-                                #(cond-> % (pos? %) dec))]
-      (when (< new old)
-        (a/go (a/<! threads)))))
-  (stop-all [this]
-    (loop []
-      (when (p/dec-thread-count this)
-        (recur))))
-  (start-thread [this x thread]
-    (let [result (a/chan)]
-      (a/thread
-        (apply-xf x result)
-        (a/>!! threads thread))
-      result))
-  (flow [this in pipe]
-    (flow-impl this in pipe nil)))
+(defn worker
+  "Returns map with stateful worker data."
+  ([] (worker nil))
+  ([{:keys [max-thread-count]
+     :or   {max-thread-count 1000}}]
+   {:threads      (a/chan max-thread-count)
+    :thread-count (atom 0)}))
 
-
-(defn create-worker []
-  (map->Worker {:threads (a/chan 1000)
-                :thread-count (atom 0)
-                :apply-xf apply-xf})
-  )
 
 (comment
-
 
  (future
    (tap> (let [w (create-worker)]

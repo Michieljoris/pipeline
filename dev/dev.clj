@@ -64,8 +64,14 @@
        (cond-> x
          (not (:i x)) (assoc :i (swap! i inc)) )))))
 
+(defn stop-all [worker]
+  (loop []
+    (when (p/dec-thread-count worker)
+      (recur))))
+
 
 (comment
+
 
   (a/thread
     (tap> :start)
@@ -75,21 +81,29 @@
     )
 
   (future
-    (tap> (let [worker (p/create-worker)
-                pipe   (p/as-pipe [{:xf inc
-                                    ;; (fn [data]
-                                    ;;       [(inc data) (inc data)])
-                                    ;; :mult true
-                                    }
-                                   {:xf inc}
-                                   ])
-                in     (u/channeled (range 1))
-                ]
-            (prot/inc-thread-count worker)
+   (time
+    (tap> (let [worker (p/worker {})
+                pipe-line   [{:xf (fn [data]
+                                    ;; (Thread/sleep 1000)
+                                    (inc data))
+                              ;; (fn [data]
+                              ;;       [(inc data) (inc data)])
+                              ;; :mult true
+                              }
+                             {:xf inc}
+                             ]
+                source     (u/channeled (range 1))]
+
+            (dotimes [_ 1] (p/inc-thread-count worker))
             (->
-             (prot/flow worker in pipe)
-             (extract-raw-results)))
-          )
+             (p/flow worker source pipe-line nil)
+             (extract-raw-results)
+             ;; :result
+             ;; count
+             )
+
+            )
+          ))
     )
 
  (future
