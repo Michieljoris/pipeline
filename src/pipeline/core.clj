@@ -15,7 +15,6 @@
 (defn queue?
   "Default implementation. Decide on queueing for further processing."
   [pipeline data]
-  (tap> {:queue? pipeline :data data})
   (and (seq pipeline) (some? data)))
 
 (defn start-thread
@@ -83,116 +82,6 @@
    {:threads      (a/chan max-thread-count)
     :thread-count (atom 0)}))
 
-
-(comment
-
- (future
-   (tap> (let [w (create-worker)]
-      (p/inc-thread-count w)
-      (p/inc-thread-count w)
-      ;; (dec-thread-count w)
-      (p/stop-all w)
-      (-> w :thread-count deref)
-      )))
-
-  (let [c (a/chan 2)]
-    [(a/offer! c :foo)
-     (a/offer! c :foo)
-     (a/offer! c :foo)
-
-     (a/poll! c)
-     (a/poll! c)
-     (a/poll! c)
-     (a/poll! c)
-     ]
-    )
-  
-;; (defn enqueue-c
-;;   "Default implementation. Enqueue x on the appropriate queue. Queueing should
-;;    block in a go thread. check-in should be called before every queueing,
-;;    check-out should be called after all results are queued"
-;;   [result-channel queues {:keys [check-in check-out out]}
-;;    ;; {:keys [data pipe] :as x} queues
-;;    ]
-;;   (a/go-loop []
-;;       (if-let [{:keys [data pipe] :as x} (a/<! result-channel)]
-;;         (do
-;;           (let [queue (get queues (:i pipe))]
-;;             (if (queue? pipe data)
-;;               (do  (check-in)
-;;                    (a/>! queue x))
-;;               (a/>! out x)))
-;;           (recur))
-;;         (check-out))))
-
-
-
-  
-  (defn flow-impl
-    "Flows in through the pipe using worker, producing 1 or more outputs per input.
-   Results are put on the returned out channel, which can be passed in. The
-   pipe (or the result of calling pipe on source if pipe is a function) gets
-   assoced with every input element and is used by the threads to apply the
-   right transformation. Results are unordered relative to input. By default,
-   the out channel will be closed when the in channel closes (once all
-   processing is done), but this can be determined by the close? parameter.
-   Consumes from the in channel as long as data is taken from the out channel or
-   until out channel is closed (once all processing is done)."
-    [worker in pipe {:keys [out close?] :or {close? true out (a/chan)}}]
-    (let [monitor (atom 0)
-          check-in #(swap! monitor inc)
-          check-out #(when (and (zero? (swap! monitor dec)) close?)
-                       (a/close! out))
-          wrapped-x (with-meta {} {:check-in check-in :check-out check-out :out out})
-          pipe-fn (if (fn? pipe) pipe (constantly pipe))]
-      (check-in)
-      (a/go
-        (loop []
-          (when-let [data (a/<! in)]
-            (check-in)
-            (when (a/>! worker (assoc wrapped-x :data data :pipe (pipe-fn data)) )
-              (recur))))
-        (check-out))
-      out))
-
-  (defrecord Worker [state queues enqueue apply-xf]
-    Threads
-    (inc-thread-count [this]
-      (swap! state conj (start-thread this)))
-    (dec-thread-count [threads]
-      (when-let [halt (first @state)]
-        (swap! state rest)
-        (a/close! halt)))
-    (start-thread [this]
-      (let [halt (a/chan)
-            p-queues (into [halt] (reverse queues))]
-        (a/thread
-          (loop []
-            (let [[x _] (a/alts!! p-queues :priority true)]
-              (when x
-                (enqueue (apply-xf x) queues (meta x))
-                (recur)))))
-        halt))
-    (stop-all [this]
-      (doseq [halt @state] (a/close! halt)))
-    (flow [this in pipe] (flow this in pipe nil))
-    (flow [this in pipe opts] (flow-impl (first queues) in pipe opts)))
-
-  (defn worker
-    "Starts up thread-count threads, and creates queue-count queue channels. Each
-   thread is set up to process data as put on the queues."
-    ([thread-count] (worker thread-count nil))
-    ([thread-count {:keys [queue-count apply-xf enqueue]
-                    :or   {queue-count 100
-                           enqueue     enqueue-c
-                           apply-xf    apply-xf-c}}]
-     (let [this-worker (map->Worker {:queues   (->> (repeatedly a/chan) (take queue-count) vec)
-                                     :state    (atom [])
-                                     :enqueue  enqueue
-                                     :apply-xf apply-xf})]
-       (dotimes [_ thread-count] (inc-thread-count this-worker))
-       this-worker))))
-
 ;;TODO: finish specs
 (s/def ::xf fn?)
 (s/def ::apply-xf fn?)
@@ -231,9 +120,6 @@
 ;;    as-pipe
 ;;    flow])
 
-
-(comment
-  (worker 1 nil))
    ;; (u/assert-spec ::worker-args {:thread-count thread-count :opts opts} )
 
   ;; (s/alt :nullary (s/cat)

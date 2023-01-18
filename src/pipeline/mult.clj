@@ -1,6 +1,5 @@
 (ns pipeline.mult
-  (:require [clojure.core.async :as a]
-            [pipeline.catch-ex :as catch-ex]))
+  (:require [clojure.core.async :as a]))
 
 (defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.

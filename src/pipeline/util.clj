@@ -95,7 +95,7 @@
              n (a/take n)))))))
 
 (defn block-on-pred
-  "Polls the b atom every ms milliseconds, returns when (pred a) returns false
+  "Polls the a atom every ms milliseconds, returns when (pred a) returns false
    or when halt channel is closed."
   [a pred halt ms]
   (loop []
@@ -139,20 +139,12 @@
           (recur))))
     a))
 
-(defn >!!null
+(defn drain
   "Reads and discards all values read from c"
   [c]
   (a/go-loop []
     (when (a/<! c)
       (recur))))
-
-(defn linked-list
-  "Returns a linked list built from the elements of xs collection with each
-   element linked to the next."
-  [xs]
-  (reduce (fn [ll x]
-            (assoc x :next ll))
-          (reverse xs)))
 
 (defn csv-xf
   "Takes a csv-source channel, reads the first (headers) element and returns a
