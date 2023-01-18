@@ -1,13 +1,14 @@
 (ns pipeline.core
   (:require [clojure.core.async :as a]
             [clojure.spec.alpha :as s]
+            [pipeline.protocol :as p]
             [clojure.spec.test.alpha :as stest]
             [pipeline.util :as u]))
 
-(defn apply-xf-c
+(defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.
    Handler functions passed to wrapper together with x"
-  [{:keys [data pipe] {:keys [xf mult]} :pipe :as x}]
+  [{:keys [data pipe] {:keys [xf mult]} :pipe :as x} result-chan]
   (let [result (try
                  (let [result (xf data)]
                    (if mult
@@ -15,7 +16,7 @@
                      [result]))
                  (catch Throwable t [t]))
         x' (assoc x :pipe (:next pipe))]
-    (a/to-chan! (map #(assoc x' :data %) result))))
+    (a/onto-chan! result-chan (map #(assoc x' :data %) result))))
 
 (defn queue?
   "Default implementation. Decide on queuing for further processing."
@@ -30,103 +31,104 @@
   ([xfs offset]
    (->> xfs (map-indexed #(assoc %2 :i (+ offset %1))) u/linked-list)))
 
-(defprotocol Threads
-    (inc-thread-count [this t])
-    (dec-thread-count [this])
-    (start-thread [this])
-    (stop-all [this])
-    (flow [this in pipe] [this in pipe opts]))
-
-(defn enqueue-c
-  "Default implementation. Enqueue x on the appropriate queue. Queueing should
-   block in a go thread. check-in should be called before every queueing,
-   check-out should be called after all results are queued"
-  [result-channel {:keys [check-in check-out out]}
-   ;; {:keys [data pipe] :as x} queues
-   ]
-  (let [task (a/chan)]
-    (a/go-loop []
-      (if-let [{:keys [data pipe] :as x} (a/<! result-channel)]
-        (do
-           ;; let [task (a/chan) ;; (get queues (:i pipe))
-           ;;      ]
-          (a/>! task x)
-            ;; (if (queue? pipe data)
-            ;;   (a/>! task x)
-            ;;   (a/>! out x))
-          (recur))
-        (do
-          (a/close! task)
-          (check-out))))
-    task
-    ))
-
-(defn apply-xf-p [thread x threads]
-  (a/thread
-    (let [result-channel (apply-xf-c x)
-          task (enqueue-c result-channel (meta x))]
-      (a/>!! threads thread)
-      task)))
-
-(defn flow-impl2
+(defn flow-impl
   "Process messages from input in parallel Note: the order of outputs may not
    match the order of inputs."
-  [{:keys [threads]} in pipe {:keys [out close?] :or {close? true out (a/chan)}}]
+  [{:keys [threads] :as w} in pipe {:keys [out close?] :or {close? true out (a/chan)}}]
   (let [monitor (atom 0)
         check-in #(swap! monitor inc)
         check-out #(when (and (zero? (swap! monitor dec)) close?)
                      (a/close! out))
-        wrapped-x (with-meta {} {:check-in check-in :check-out check-out :out out})
         pipe-fn (if (fn? pipe) pipe (constantly pipe))
-        input (a/chan)]
+        input (a/chan 1 (map #(hash-map :data % :pipe (pipe-fn %))))
+        ;; input (a/chan)
+        ]
 
     (check-in)
-    (a/go
-      (loop []
-        (if-let [data (a/<! in)]
-          (do
-            (check-in)
-            (when (a/>! input (assoc wrapped-x :data data :pipe (pipe-fn data)) )
-              (recur)))
-          (a/close! input)))
-      (check-out))
+    ;;TODO this can be the input channel with transducer, then pipe into it.
+    (a/pipe in input)
 
-    (a/go-loop [tasks #{input}]
-      (when (seq tasks)
-        (let [[{:keys [pipe data] :as x} task] (a/alts! (vec tasks) :priority true)] ;;order by priority?
+    ;; (a/go
+    ;;   (loop []
+    ;;     (when-let [data (a/<! in)]
+    ;;       (tap> {:data data})
+    ;;       (a/>! input
+    ;;             data
+    ;;             ;; {:data data :pipe (pipe-fn data)}
+    ;;             )
+    ;;       (recur)))
+    ;;   (a/close! input))
+
+    (a/go-loop [inputs #{input}]
+      (when (seq inputs)
+        (let [[{:keys [pipe data] :as x} input] (a/alts! (vec inputs))]
           (if (nil? x)
-            (recur (disj tasks task)) ;;end of input
+            (do
+              (check-out)
+              (recur (disj inputs input))) ;;end of input
             (if (queue? pipe data)
-              (do
+              (let [thread (a/<! threads)] ;;wait for thread to be available
                 (check-in)
-                (recur (conj tasks (apply-xf-p (a/<! threads) x threads))))
+                (recur (conj inputs (p/start-thread w x thread))))
               (do (a/>! out x)
-                  (recur tasks)))))))))
+                  (recur inputs)))))))
+    out))
 
 
 
-(defrecord Worker [queues threads apply-xf enqueue]
-  Threads
-  (inc-thread-count [this t]
-    (a/go (a/>! threads t)))
+(defrecord Worker [threads thread-count apply-xf]
+  p/Threads
+  (inc-thread-count [this]
+    (when (a/offer! threads :t)
+      (swap! thread-count inc)))
   (dec-thread-count [this]
-    (a/go (a/<! threads)))
-  (start-thread [this]
-    (a/thread
-      (enqueue-c (apply-xf x) queues (meta x))
-      (a/>!! threads thread)))
+    (let [[old new] (swap-vals! thread-count
+                                #(cond-> % (pos? %) dec))]
+      (when (< new old)
+        (a/go (a/<! threads)))))
   (stop-all [this]
-    (a/go-loop []
-      (when (a/<! threads)
+    (loop []
+      (when (p/dec-thread-count this)
         (recur))))
+  (start-thread [this x thread]
+    (let [result (a/chan)]
+      (a/thread
+        (apply-xf x result)
+        (a/>!! threads thread))
+      result))
   (flow [this in pipe]
-    (flow-impl2 this in pipe nil)))
+    (flow-impl this in pipe nil)))
 
-(defn worker []
-  (map->Worker {:threads (a/chan 1000)})
+
+(defn create-worker []
+  (map->Worker {:threads (a/chan 1000)
+                :thread-count (atom 0)
+                :apply-xf apply-xf})
   )
 
 (comment
+
+
+ (future
+   (tap> (let [w (create-worker)]
+      (p/inc-thread-count w)
+      (p/inc-thread-count w)
+      ;; (dec-thread-count w)
+      (p/stop-all w)
+      (-> w :thread-count deref)
+      )))
+
+  (let [c (a/chan 2)]
+    [(a/offer! c :foo)
+     (a/offer! c :foo)
+     (a/offer! c :foo)
+
+     (a/poll! c)
+     (a/poll! c)
+     (a/poll! c)
+     (a/poll! c)
+     ]
+    )
   
 ;; (defn enqueue-c
 ;;   "Default implementation. Enqueue x on the appropriate queue. Queueing should

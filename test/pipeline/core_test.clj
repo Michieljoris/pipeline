@@ -6,6 +6,7 @@
    [pipeline.stat :as stat]
    [pipeline.util :as u]
    [pipeline.mult :as mult]
+   [pipeline.protocol :as prot]
    [pipeline.catch-ex :as catch-ex]
    [clojure.string :as str]
    [clojure.data.csv :as csv]
@@ -60,9 +61,12 @@
   (= a b))
 
 (comment
+
+  
+
   (future
     (let [result-channel (a/chan)
-          task (p/enqueue-c result-channel {:check-out #(tap> :checking-out)})]
+          task           (p/enqueue-c result-channel {:check-out #(tap> :checking-out)})]
       (a/go
         (a/>!! result-channel 1)
         (a/>!! result-channel 2)
@@ -92,14 +96,14 @@
  (future
    (tap> (->> (p/flow
                (p/worker 1 ;; {:apply-xf (apply-xf-fn p/apply-xf)}
-                                )
+                         )
+               (p/as-pipe [{:xf (fn [data]
+                                  [(inc data) (inc data)])
+                            :mult true}
+                           {:xf inc}
+                           ])
                (u/channeled (range 1))
-                      (p/as-pipe [{:xf (fn [data]
-                                         [(inc data) (inc data)])
-                                   :mult true}
-                                  {:xf inc}
-                                  ])
-                      )
+               )
               extract-raw-results))
 
    )

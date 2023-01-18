@@ -4,6 +4,7 @@
    [clojure.core.async :as a]
    [clojure.java.io :as io]
    [pipeline.core :as p]
+   [pipeline.protocol :as prot]
    [pipeline.stat :as stat]
    [pipeline.util :as u]
    [clojure.string :as str]
@@ -33,6 +34,37 @@
 ;; TODO: log estimate on likely duration of job
 ;; TODO add stats examples
 
+
+(def group-by-result-type
+  (comp (partial group-by (fn [{:keys [data pipe]}]
+                       (cond (instance? Throwable data) :error
+                             (empty? pipe)              :result
+                             (nil? data)                :nil-result
+                             :else                      :queue)))
+        #(sort-by :i %)))
+
+(defn extract-raw-results [out]
+  (-> out
+      u/as-promise
+      deref
+      group-by-result-type))
+
+(defn extract-results [out]
+(reduce-kv (fn [acc k v]
+             (assoc acc k (mapv :data v)))
+        {}
+        (extract-raw-results out)))
+
+(defn apply-xf-fn [apply-xf]
+  (let [i (atom -1)]
+    (fn [x]
+      ((:log-count (:pipe x) #(do)))
+      ((:log-period (:pipe x) #(do)))
+      (apply-xf
+       (cond-> x
+         (not (:i x)) (assoc :i (swap! i inc)) )))))
+
+
 (comment
 
   (a/thread
@@ -40,6 +72,24 @@
     ;; (tap> {:timeout (a/<!! (a/timeout 50000))})
     (Thread/sleep 1000)
     (tap> :end)
+    )
+
+  (future
+    (tap> (let [worker (p/create-worker)
+                pipe   (p/as-pipe [{:xf inc
+                                    ;; (fn [data]
+                                    ;;       [(inc data) (inc data)])
+                                    ;; :mult true
+                                    }
+                                   {:xf inc}
+                                   ])
+                in     (u/channeled (range 1))
+                ]
+            (prot/inc-thread-count worker)
+            (->
+             (prot/flow worker in pipe)
+             (extract-raw-results)))
+          )
     )
 
  (future

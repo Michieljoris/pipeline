@@ -1,9 +1,8 @@
 (ns dev-stats
   (:require
-   [pipeline.frequencies :as freq]
+   [com.stuartsierra.frequencies :as freq]
 
-   [pipeline.stat :as stat]
-   [pipeline.xforms :as xf])
+   [pipeline.stat :as stat])
   )
 
 ;; more
@@ -108,67 +107,69 @@
       )))
 
 
-(defn record-thread-details [thread-details {:keys [index xfs]} thread on?]
-  (swap! thread-details conj {:thread thread
-                              :index index
-                              :step (-> xfs first :step)
-                              :timestamp (now)
-                              :on? on?}))
+
+(comment
+  (defn record-thread-details [thread-details {:keys [index xfs]} thread on?]
+    (swap! thread-details conj {:thread thread
+                                :index index
+                                :step (-> xfs first :step)
+                                :timestamp (now)
+                                :on? on?}))
 
 
-(def last-timestamp (atom nil))
-(def max-thread-count (atom 10))
-(do
-  (reset! last-timestamp nil)
-  (defn thread-activity [xfs]
-    (let [thread-count @max-thread-count
-          thread-vector (into [] (take thread-count (repeat
-                                                     ;; :xxxx
-                                                     nil
-                                                            )))]
-      (->> @thread-details
-           (reduce (fn [acc {:keys [thread xfs-i index on? timestamp]}]
-                     (when (and @last-timestamp on?)
+  (def last-timestamp (atom nil))
+  (def max-thread-count (atom 10))
+  (do
+    (reset! last-timestamp nil)
+    (defn thread-activity [xfs]
+      (let [thread-count @max-thread-count
+            thread-vector (into [] (take thread-count (repeat
+                                                       ;; :xxxx
+                                                       nil
+                                                       )))]
+        (->> @thread-details
+             (reduce (fn [acc {:keys [thread xfs-i index on? timestamp]}]
+                       (when (and @last-timestamp on?)
 
-                     (tap> (- timestamp @last-timestamp))
-                       (stat/add-stat :thread-on (- timestamp @last-timestamp))
-                       )
-                     (reset! last-timestamp timestamp)
-                     (let [last-thread-vector (last acc)]
-                       (conj acc (assoc last-thread-vector thread (if on?
+                         (tap> (- timestamp @last-timestamp))
+                         (stat/add-stat :thread-on (- timestamp @last-timestamp))
+                         )
+                       (reset! last-timestamp timestamp)
+                       (let [last-thread-vector (last acc)]
+                         (conj acc (assoc last-thread-vector thread (if on?
                                                                       [index (inc xfs-i)]
                                                                       []
                                                                       ;; :xxxx
                                                                       )))))
-                   [thread-vector])
-           (map (fn [v]
-                  (let [v' (into [] (sort (keep second v)))
-                        thread-count (count v')
-                        freq-map (frequencies v')]
-                    (->> (range (count xfs))
-                         (reduce (fn [acc xfs-i]
-                                   (conj acc
-                                         (if-let [freq (get freq-map (inc xfs-i))]
-                                           (int (* 100.0 (/ freq thread-count)))
-                                           0
-                                           ))
-                                   )
-                                 [(str thread-count)]
-                                 ))
-                    )
+                     [thread-vector])
+             (map (fn [v]
+                    (let [v' (into [] (sort (keep second v)))
+                          thread-count (count v')
+                          freq-map (frequencies v')]
+                      (->> (range (count xfs))
+                           (reduce (fn [acc xfs-i]
+                                     (conj acc
+                                           (if-let [freq (get freq-map (inc xfs-i))]
+                                             (int (* 100.0 (/ freq thread-count)))
+                                             0
+                                             ))
+                                     )
+                                   [(str thread-count)]
+                                   ))
+                      )
 
-                  ))
-           ;; (map #(sort (fn [x y]
-           ;;               (cond
-           ;;                 (and (vector? x) (keyword? y)) -1
-           ;;                 (and (vector? y) (keyword? x)) 1
-           ;;                 (and (vector? x) (vector? y)) (compare (first x) (first y))
-           ;;                 :else 1)) %))
-           ;; (map str)
-           )
-      ))
-  ;; (thread-activity)
-  )
+                    ))
+             ;; (map #(sort (fn [x y]
+             ;;               (cond
+             ;;                 (and (vector? x) (keyword? y)) -1
+             ;;                 (and (vector? y) (keyword? x)) 1
+             ;;                 (and (vector? x) (vector? y)) (compare (first x) (first y))
+             ;;                 :else 1)) %))
+             ;; (map str)
+             )
+        ))
+    ;; (thread-activity)
+    ))
 
 ;; (defn process-source [{:keys [source xfs]} monitor
 ;;                       {:keys [cpu-thread-count io-thread-count log complete abort?] :as opts}]
