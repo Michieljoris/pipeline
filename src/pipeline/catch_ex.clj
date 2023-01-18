@@ -1,12 +1,16 @@
-(ns pipeline.catch-ex)
+(ns pipeline.catch-ex
+  (:require [clojure.core.async :as a]))
 
 (defn apply-xf
-  "Calls the xf function on data and updates pipe to the next one."
-  [{:keys [data pipe] :as x}]
-  (merge x {:data (try ((:xf pipe) data) (catch Throwable t t))
-            :pipe (:next pipe)}))
+  "Default implementation. Calls the pipeline's xf function on wrapped data and
+   updates pipeline."
+  [{:keys [data pipeline] :as x} result]
+  (let [x' (merge x {:data     (try ((-> pipeline first :xf) data)
+                                    (catch Throwable t t))
+                     :pipeline (rest pipeline)})]
+    (a/go (a/>! result x') (a/close! result))))
 
-(defn queue? [pipe data]
-  (not (or (instance? Throwable data)
-           (empty? pipe)
-           (nil? data))))
+(defn queue? [pipeline data]
+  (tap> {:queue pipeline :data data})
+  (and (seq pipeline) (some? data)
+       (not (instance? Throwable data))))

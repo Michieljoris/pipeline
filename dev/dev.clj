@@ -4,12 +4,13 @@
    [clojure.core.async :as a]
    [clojure.java.io :as io]
    [pipeline.core :as p]
-   [pipeline.protocol :as prot]
    [pipeline.stat :as stat]
    [pipeline.util :as u]
    [clojure.string :as str]
    [clojure.data.csv :as csv]
-   [taoensso.timbre :as log])
+   [taoensso.timbre :as log]
+   [pipeline.mult :as mult]
+   [pipeline.catch-ex :as catch-ex])
   )
 
 ;; TODO finish tests
@@ -64,10 +65,10 @@
        (cond-> x
          (not (:i x)) (assoc :i (swap! i inc)) )))))
 
-(defn stop-all [worker]
-  (loop []
-    (when (p/dec-thread-count worker)
-      (recur))))
+;; (defn stop-all [worker]
+;;   (loop []
+;;     (when (p/dec-thread-count worker)
+;;       (recur))))
 
 
 (comment
@@ -81,29 +82,36 @@
     )
 
   (future
-   (time
-    (tap> (let [worker (p/worker {})
-                pipe-line   [{:xf (fn [data]
-                                    ;; (Thread/sleep 1000)
-                                    (inc data))
-                              ;; (fn [data]
-                              ;;       [(inc data) (inc data)])
-                              ;; :mult true
-                              }
-                             {:xf inc}
-                             ]
-                source     (u/channeled (range 1))]
+    (tap> (let [{:keys [threads inc-thread-count]} (p/threads)
+                pipe-line [
+                           ;; {:xf (fn [data]
+                           ;;        ;; (Thread/sleep 1000)
+                           ;;        (inc data))
 
-            (dotimes [_ 1] (p/inc-thread-count worker))
+                           ;;  }
+
+                           {:xf (fn [data]
+                                  [(inc data) (inc data)]
+                                  ;; (inc data)
+                                  )
+                            :mult true}
+                           {:xf inc}
+                           ]
+                source (u/channeled (range 1))]
+            (dotimes [_ 1] (inc-thread-count))
             (->
-             (p/flow worker source pipe-line nil)
+             (p/flow source pipe-line threads
+                     {:apply-xf catch-ex/apply-xf
+                      :queue? catch-ex/queue?
+                      }
+                     )
              (extract-raw-results)
              ;; :result
              ;; count
              )
 
             )
-          ))
+          )
     )
 
  (future

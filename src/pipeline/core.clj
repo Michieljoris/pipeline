@@ -17,70 +17,57 @@
   [pipeline data]
   (and (seq pipeline) (some? data)))
 
-(defn start-thread
-  "Applies apply-xf fn to x in a new thread. Puts itself back in the pool when
-   done. Returns channel with result."
-  [{:keys [threads]} apply-xf x]
-  (let [result (a/chan)]
-    (a/thread
-      (apply-xf x result)
-      (a/>!! threads :t))
-    result))
-
 (defn flow
-  "Flow source through pipeline using worker to optionally supplied out. When
+  "Flow source through pipeline using threads to optionally supplied out. When
    close? is true closes out when in closes (and processing is finished). Supply
    optional queue? fn to decided on queuing, and optional custom apply-xf fn.
    Returns out channel "
-  [{:keys [threads] :as worker} source pipeline
-   {:keys [out close? queue? apply-xf]
-    :or {close? true out (a/chan) apply-xf apply-xf queue? queue?}}]
-  (let [monitor (atom 0)
-        check-in #(swap! monitor inc)
-        check-out #(when (and (zero? (swap! monitor dec)) close?)
-                     (a/close! out))
-        pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))
-        input (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %))))]
+  ([source pipeline threads] (flow source pipeline threads nil))
+  ([source pipeline threads
+    {:keys [out close? queue? apply-xf]
+     :or   {close? true out (a/chan) apply-xf apply-xf queue? queue?}}]
+   (let [monitor (atom 0)
+         check-in #(swap! monitor inc)
+         check-out #(when (and (zero? (swap! monitor dec)) close?)
+                      (a/close! out))
+         pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))
+         input (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %))))]
 
-    (check-in)
-    (a/pipe source input)
+     (check-in)
+     (a/pipe source input)
 
-    (a/go-loop [inputs #{input}]
-      (when (seq inputs)
-        (let [[{:keys [pipeline data] :as x} input] (a/alts! (vec inputs))]
-          (if (nil? x)
-            (do
-              (check-out)
-              (recur (disj inputs input))) ;;end of input
-            (if (queue? pipeline data)
-              (do  (a/<! threads) ;;wait for thread to be available
-                   (check-in)
-                   (recur (conj inputs (start-thread worker apply-xf x))))
-              (do (a/>! out x)
-                  (recur inputs)))))))
-    out))
+     (a/go-loop [inputs #{input}]
+       (when (seq inputs)
+         (let [[{:keys [pipeline data] :as x} input] (a/alts! (vec inputs))]
+           (if (nil? x)
+             (do
+               (check-out)
+               (recur (disj inputs input))) ;;end of input
+             (if (queue? pipeline data)
+               (let [new-input (a/chan)]
+                 (check-in)
+                 (a/<! threads) ;;wait for thread to be available
+                 (a/thread (apply-xf x new-input) (a/>!! threads :t))
+                 (recur (conj inputs new-input)))
+               (do (a/>! out x)
+                   (recur inputs)))))))
+     out)))
 
-(defn inc-thread-count
-  "Increase thread count of worker"
-  [{:keys [threads thread-count]}]
-  (when (a/offer! threads :t)
-    (swap! thread-count inc)))
-
-(defn dec-thread-count
-  "Decrease thread count of worker"
-  [{:keys [threads thread-count]}]
-  (let [[old new] (swap-vals! thread-count
-                              #(cond-> % (pos? %) dec))]
-    (when (< new old)
-      (a/go (a/<! threads)))))
-
-(defn worker
-  "Returns map with stateful worker data."
-  ([] (worker nil))
-  ([{:keys [max-thread-count]
-     :or   {max-thread-count 1000}}]
-   {:threads      (a/chan max-thread-count)
-    :thread-count (atom 0)}))
+(defn threads
+  "Returns map with stateful threads data."
+  ([] (threads 1000))
+  ([max-thread-count]
+   (let [threads (a/chan max-thread-count)
+         thread-count (atom 0)]
+     {:threads          threads
+      :thread-count     thread-count
+      :inc-thread-count #(when (a/offer! threads :t)
+                           (swap! thread-count inc))
+      :dec-thread-count (fn []
+                          (let [[old new] (swap-vals! thread-count
+                                                      #(cond-> % (pos? %) dec))]
+                            (when (< new old)
+                              (a/go (a/<! threads)))))})))
 
 ;;TODO: finish specs
 (s/def ::xf fn?)
