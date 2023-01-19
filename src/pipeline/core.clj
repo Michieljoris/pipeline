@@ -41,21 +41,27 @@
                   (recur inputs)))))))
     out))
 
+(defn inc-task-count [{:keys [task-count tasks]}]
+  (when (a/offer! tasks :t)
+    (swap! task-count inc)))
+
+(defn dec-task-count  [{:keys [task-count tasks]}]
+  (let [[old new] (swap-vals! task-count
+                              #(cond-> % (pos? %) dec))]
+    (when (< new old)
+      (a/go (a/<! tasks)))))
+
 (defn tasks
   "Returns map with stateful tasks data, and two update functions."
-  ([] (tasks 1000))
-  ([max-task-count]
+  ([] (tasks 0))
+  ([task-count] (tasks task-count 1000))
+  ([initial-task-count max-task-count]
    (let [tasks (a/chan max-task-count)
-         task-count (atom 0)]
-     {:tasks          tasks
-      :task-count     task-count
-      :inc-task-count #(when (a/offer! tasks :t)
-                           (swap! task-count inc))
-      :dec-task-count (fn []
-                          (let [[old new] (swap-vals! task-count
-                                                      #(cond-> % (pos? %) dec))]
-                            (when (< new old)
-                              (a/go (a/<! tasks)))))})))
+         task-count (atom 0)
+         state {:tasks          tasks
+                :task-count     task-count}]
+     (dotimes [_ initial-task-count] (inc-task-count state))
+     state)))
 
 ;;TODO: finish specs
 (s/def ::xf fn?)

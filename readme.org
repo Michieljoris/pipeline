@@ -1,7 +1,7 @@
 * Description
-Minimal parallel pipeline for processing data in multiple stages, variable
-task/thread count and easily extendable. Each stage can return zero or more
-results, each will be processed further. Results are unordered.
+Minimal extendable parallel pipeline for processing data in multiple stages,
+variable task/thread count. Each stage can return zero or more results, each
+will be processed further. Results are unordered.
 
 A task for processing data should return results asynchronously through a
 channel. The function itself should return as soon as possible. When work is
@@ -101,8 +101,7 @@ instead of just processing one transformation in parallel.
 
 * Examples
 #+begin_src clojure
-;; Minimal pipeline that returns a channel that closes after taking 5 values
-;; which will be 2,3,4,5,6 in an undetermined order
+;; Minimal pipeline that returns a channel that closes after taking 10 values
 (let [{:keys [tasks]} (p/tasks 2) ;; thread count of 2
       xfs [{:xf inc} {:xf inc}] ;; inc each element twice
       source (wrapped/wrap-source (u/channeled (range 10)) xfs)] ;; bind source with xfs
@@ -110,7 +109,7 @@ instead of just processing one transformation in parallel.
           {:queue? wrapped/queue?
            :work   wrapped/thread}))
 ;;=>
-(2 3 4 5 6 7 8 9 10 11)
+(2 3 4 5 6 7 8 9 10 11) ;;in some unordered order :->
 #+end_src
 
 * TODO
