@@ -4,77 +4,65 @@
             [clojure.spec.test.alpha :as stest]
             [pipeline.util :as u]))
 
-(defn apply-xf
-  "Default implementation. Calls the pipeline's xf function on wrapped data and
-   updates pipeline."
-  [{:keys [data pipeline] :as x} result]
-  (let [x' (merge x {:data     ((-> pipeline first :xf) data)
-                     :pipeline (rest pipeline)})]
-    (a/go (a/>! result x') (a/close! result))))
-
-(defn queue?
-  "Default implementation. Decide on queueing for further processing."
-  [pipeline data]
-  (and (seq pipeline) (some? data)))
-
 (defn flow
-  "Flow source through pipeline using threads to optionally supplied out. When
-   close? is true closes out when in closes (and processing is finished). Supply
-   optional queue? fn to decided on queuing, and optional custom apply-xf fn.
+  "Flow source through pipeline using tasks to optionally supplied out. When
+   close? is true closes out when in closes (and processing is finished).
+
+   The work function receives two arguments, x and done. The function should
+   return as fast as possible (so do any actual work in a thread, go block or
+   put to result channel in a callback) and return a channel with zero or more
+   results, which should close once all results are put on the channel. Once
+   work is finished done, a no arg function, should be called so the task can be
+   released.
+
    Returns out channel "
-  ([source pipeline threads] (flow source pipeline threads nil))
-  ([source pipeline threads
-    {:keys [out close? queue? apply-xf]
-     :or   {close? true out (a/chan) apply-xf apply-xf queue? queue?}}]
-   (let [monitor (atom 0)
-         check-in #(swap! monitor inc)
-         check-out #(when (and (zero? (swap! monitor dec)) close?)
-                      (a/close! out))
-         pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))
-         input (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %))))]
+  [source tasks {:keys [out close? queue? work]
+                 :or   {close? true out (a/chan)}}]
+  (let [monitor (atom 0)
+        check-in #(swap! monitor inc)
+        check-out #(when (and (zero? (swap! monitor dec)) close?)
+                     (a/close! out))]
 
-     (check-in)
-     (a/pipe source input)
+    (check-in)
 
-     (a/go-loop [inputs #{input}]
-       (when (seq inputs)
-         (let [[{:keys [pipeline data] :as x} input] (a/alts! (vec inputs))]
-           (if (nil? x)
-             (do
-               (check-out)
-               (recur (disj inputs input))) ;;end of input
-             (if (queue? pipeline data)
-               (let [new-input (a/chan)]
-                 (check-in)
-                 (a/<! threads) ;;wait for thread to be available
-                 (a/thread (apply-xf x new-input) (a/>!! threads :t))
-                 (recur (conj inputs new-input)))
-               (do (a/>! out x)
-                   (recur inputs)))))))
-     out)))
+    (a/go-loop [inputs #{source}]
+      (when (seq inputs)
+        (let [[x input] (a/alts! (vec inputs))]
+          (if (nil? x)
+            (do
+              (check-out)
+              (recur (disj inputs input))) ;;end of input
+            (if (queue? x)
+              (do
+                (check-in)
+                (a/<! tasks) ;;wait for task to be available
+                (recur (conj inputs (work x #(a/>!! tasks :t)))))
+              (do (a/>! out x)
+                  (recur inputs)))))))
+    out))
 
-(defn threads
-  "Returns map with stateful threads data."
-  ([] (threads 1000))
-  ([max-thread-count]
-   (let [threads (a/chan max-thread-count)
-         thread-count (atom 0)]
-     {:threads          threads
-      :thread-count     thread-count
-      :inc-thread-count #(when (a/offer! threads :t)
-                           (swap! thread-count inc))
-      :dec-thread-count (fn []
-                          (let [[old new] (swap-vals! thread-count
+(defn tasks
+  "Returns map with stateful tasks data, and two update functions."
+  ([] (tasks 1000))
+  ([max-task-count]
+   (let [tasks (a/chan max-task-count)
+         task-count (atom 0)]
+     {:tasks          tasks
+      :task-count     task-count
+      :inc-task-count #(when (a/offer! tasks :t)
+                           (swap! task-count inc))
+      :dec-task-count (fn []
+                          (let [[old new] (swap-vals! task-count
                                                       #(cond-> % (pos? %) dec))]
                             (when (< new old)
-                              (a/go (a/<! threads)))))})))
+                              (a/go (a/<! tasks)))))})))
 
 ;;TODO: finish specs
 (s/def ::xf fn?)
 (s/def ::apply-xf fn?)
 (s/def ::enqueue fn?)
 (s/def ::hook  fn?)
-(s/def ::thread-count pos-int?)
+(s/def ::task-count pos-int?)
 (s/def ::queue-count pos-int?)
 (s/def ::chan #(instance? clojure.core.async.impl.channels.ManyToManyChannel %))
 (s/def ::halt ::chan)
@@ -86,7 +74,7 @@
 (s/def ::source (s/or :buffered-reader u/buffered-reader?  :coll coll? :channel u/channel? :fn fn?))
 
 (s/fdef worker
-  :args (s/cat  :thread-count ::thread-count
+  :args (s/cat  :task-count ::task-count
                 :opts ::worker-opts)
   :ret ::chan)
 
@@ -107,7 +95,7 @@
 ;;    as-pipe
 ;;    flow])
 
-   ;; (u/assert-spec ::worker-args {:thread-count thread-count :opts opts} )
+   ;; (u/assert-spec ::worker-args {:task-count task-count :opts opts} )
 
   ;; (s/alt :nullary (s/cat)
   ;;              :unary (s/cat :config ::config))

@@ -10,7 +10,8 @@
    [clojure.data.csv :as csv]
    [taoensso.timbre :as log]
    [pipeline.mult :as mult]
-   [pipeline.catch-ex :as catch-ex])
+   [pipeline.catch-ex :as catch-ex]
+   [pipeline.wrapped :as wrapped])
   )
 
 ;; TODO finish tests
@@ -70,6 +71,15 @@
 ;;     (when (p/dec-thread-count worker)
 ;;       (recur))))
 
+ (defn stop [dec-thread-count]
+   (loop [] (when (dec-thread-count) (recur))))
+
+(defmacro try-future [& body]
+  `(future
+     (try
+       ~@body
+      (catch Exception e# (tap> e#)))))
+
 
 (comment
 
@@ -81,30 +91,35 @@
     (tap> :end)
     )
 
-  (future
-    (tap> (let [{:keys [threads inc-thread-count]} (p/threads)
-                pipe-line [
-                           ;; {:xf (fn [data]
-                           ;;        ;; (Thread/sleep 1000)
-                           ;;        (inc data))
 
-                           ;;  }
 
-                           {:xf (fn [data]
-                                  [(inc data) (inc data)]
-                                  ;; (inc data)
-                                  )
-                            :mult true}
-                           {:xf inc}
-                           ]
-                source (u/channeled (range 1))]
-            (dotimes [_ 1] (inc-thread-count))
-            (->
-             (p/flow source pipe-line threads
-                     {:apply-xf catch-ex/apply-xf
-                      :queue? catch-ex/queue?
+  (try-future
+    (tap> (let [{:keys [tasks inc-task-count dec-task-count]} (p/tasks)
+                xfs [
+                     {:xf (fn [data]
+                            ;; (Thread/sleep 1000)
+                            ;; (/ 1 0)
+                            (tap> :xf )
+                            (inc data))
                       }
-                     )
+
+                     ;; {:xf (fn [data]
+                     ;;        [(inc data) (inc data)]
+                     ;;        ;; (inc data)
+                     ;;        )
+                     ;;  :mult true}
+                     {:xf inc}
+                     {:xf inc}
+                     ]
+                source (wrapped/wrap-source (u/channeled (range 10)) xfs)]
+            (def inc-thread-count inc-task-count)
+            (def dec-thread-count dec-task-count)
+            (def dec-thread-count dec-task-count)
+            (dotimes [_ 1] (inc-task-count))
+            (->
+             (p/flow source tasks
+                     {:queue? wrapped/queue?
+                      :work wrapped/thread})
              (extract-raw-results)
              ;; :result
              ;; count
@@ -113,6 +128,14 @@
             )
           )
     )
+
+ (future (stop dec-thread-count))
+
+  (future
+    (tap> (inc-thread-count)))
+ (future
+   (dec-thread-count)
+   )
 
  (future
    (let [start-time   (stat/now)
@@ -526,3 +549,12 @@
             (recur))
           (doseq [out (vals outs')] (a/close! out)))))
     outs'))
+
+
+;; (defn apply-xf
+;;   "Default implementation. Calls the pipeline's xf function on wrapped data and
+;;    updates pipeline."
+;;   [{:keys [data pipeline] :as x} result]
+;;   (let [x' (merge x {:data     ((-> pipeline first :xf) data)
+;;                      :pipeline (rest pipeline)})]
+;;     (a/go (a/>! result x') (a/close! result))))
