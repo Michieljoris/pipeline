@@ -52,7 +52,7 @@
       (a/go (a/<! tasks)))))
 
 (defn tasks
-  "Returns map with stateful tasks data, and two update functions."
+  "Returns map with stateful tasks data."
   ([] (tasks 0))
   ([task-count] (tasks task-count 1000))
   ([initial-task-count max-task-count]

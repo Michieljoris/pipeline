@@ -99,6 +99,17 @@ a better abstraction where tasks themselves are parallized, but they don't need
 to be threads necessarily. I adapted it to process inputs created from outputs
 instead of just processing one transformation in parallel.
 
+Links:
+- https://bsless.github.io/mapping-parallel-side-effects/
+- https://github.com/tolitius/lasync
+- https://github.com/clj-commons/claypoole
+- https://github.com/clj-commons/manifold
+- https://github.com/clj-commons/dirigiste
+- https://github.com/funcool/promesa
+- https://github.com/aphyr/tesser
+- https://github.com/PureFnOrg/sentenza
+- https://github.com/clojure/core.async/blob/master/src/main/clojure/clojure/core/async.clj#L523
+
 * Examples
 #+begin_src clojure
 ;; Minimal pipeline that returns a channel that closes after taking 10 values
