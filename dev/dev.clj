@@ -94,40 +94,15 @@
 
 
   (try-future
-    (tap> (let [{:keys [tasks inc-task-count dec-task-count]} (p/tasks)
-                xfs [
-                     {:xf (fn [data]
-                            ;; (Thread/sleep 1000)
-                            ;; (/ 1 0)
-                            (tap> :xf )
-                            (inc data))
-                      }
 
-                     ;; {:xf (fn [data]
-                     ;;        [(inc data) (inc data)]
-                     ;;        ;; (inc data)
-                     ;;        )
-                     ;;  :mult true}
-                     {:xf inc}
-                     {:xf inc}
-                     ]
-                source (wrapped/wrap-source (u/channeled (range 10)) xfs)]
-            (def inc-thread-count inc-task-count)
-            (def dec-thread-count dec-task-count)
-            (def dec-thread-count dec-task-count)
-            (dotimes [_ 1] (inc-task-count))
-            (->
-             (p/flow source tasks
-                     {:queue? wrapped/queue?
-                      :work wrapped/thread})
-             (extract-raw-results)
-             ;; :result
-             ;; count
-             )
 
-            )
-          )
-    )
+   (let [{:keys [tasks inc-task-count]} (p/tasks)
+         xfs [{:xf inc} {:xf inc}]
+         source (wrapped/wrap-source (u/channeled (range 10)) xfs)]
+     (inc-task-count)
+     (p/flow source tasks
+             {:queue? wrapped/queue?
+              :work   wrapped/thread})))
 
  (future (stop dec-thread-count))
 
@@ -139,10 +114,10 @@
 
  (future
    (let [start-time   (stat/now)
-         source (u/channeled (map #(hash-map :id %) (range 5)) 2)
-         source (u/channeled (io/reader "resources/test.csv") 3)
-         row->map (u/csv-xf 1000 source)
-         xfs [{:xf row->map
+         source       (u/channeled (map #(hash-map :id %) (range 5)) 2)
+         source       (u/channeled (io/reader "resources/test.csv") 3)
+         row->map     (u/csv-xf 1000 source)
+         xfs          [{:xf row->map
                :log-count (u/log-count tap> "Processed first xf" 20)}
               {:xf #(assoc % :step-1 true)}
               {:xf #(assoc % :step-2 true)}]
@@ -151,13 +126,13 @@
          ;;           ((:log-count pipe #(do)))
          ;;           (-> (update x :transforms (fnil conj []) data)
          ;;               p/update-x))
-         halt (a/chan)
-         thread-hook (fn [thread-i] (tap> {:thread-i thread-i}))
-         thread-hook #(u/block-on-pred % (atom 5) > halt 1000)
-         worker (p/worker thread-count { ;; :update-x wrapper
+         halt         (a/chan)
+         thread-hook  (fn [thread-i] (tap> {:thread-i thread-i}))
+         thread-hook  #(u/block-on-pred % (atom 5) > halt 1000)
+         worker       (p/worker thread-count { ;; :update-x wrapper
                                         :thread-hook thread-hook
                                         :halt halt})
-         out (p/flow source (p/as-pipe xfs) worker)]
+         out          (p/flow source (p/as-pipe xfs) worker)]
 
      (doseq [[status p] (u/as-promises out)]
        (future (tap> {status    (if (keyword? @p) @p @p)
