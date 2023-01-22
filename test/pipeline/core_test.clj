@@ -9,7 +9,8 @@
    [clojure.string :as str]
    [clojure.data.csv :as csv]
    [taoensso.timbre :as log]
-   [clojure.test :refer :all]))
+   [clojure.test :refer :all]
+   [clojure.spec.alpha :as s]))
 
 ;; TEST:
 ;;- adjust thread count on the fly
@@ -211,9 +212,9 @@
 
 (deftest flow-test
   (testing "Simple pipe"
-    (is (= (->> (p/flow (u/channeled (range 5))
-                        (p/as-pipe [{:xf inc}
-                                    {:xf inc}])
+    (is (= (->> (p/flow (s/wrapped (u/channeled (range 5)))
+                        [{:xf inc}
+                         {:xf inc}]
                         (p/worker 1 {:apply-xf (apply-xf-fn p/apply-xf)}))
                 extract-raw-results)
            {:result [{:pipe nil

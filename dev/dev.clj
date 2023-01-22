@@ -9,8 +9,6 @@
    [clojure.string :as str]
    [clojure.data.csv :as csv]
    [taoensso.timbre :as log]
-   [pipeline.mult :as mult]
-   [pipeline.catch-ex :as catch-ex]
    [pipeline.wrapped :as wrapped])
   )
 
@@ -80,9 +78,31 @@
        ~@body
       (catch Exception e# (tap> e#)))))
 
+(def mx-bean (java.lang.management.ManagementFactory/getThreadMXBean))
+(def run-time (java.lang.Runtime/getRuntime))
 
 (comment
 
+ 
+  (let [
+
+        thread-info (.dumpAllThreads mx-bean false false)]
+    (.getThreadId (second thread-info))
+
+    (/ (.getCurrentThreadCpuTime mx-bean) (* 1000.0 1000 1000))
+    (doseq [thread-id (into [ ] (.getAllThreadIds mx-bean))]
+
+      ;; (tap> (/ (.getThreadCpuTime mx-bean thread-id) (* 1000.0 1000 1000)))
+
+
+      )
+    (tap> {:supported? (.isCurrentThreadCpuTimeSupported mx-bean)})
+    (tap> {:enabled? (.isThreadCpuTimeEnabled mx-bean)})
+    (tap> {:current-thread-id (.getId (Thread/currentThread))})
+
+    (tap> (/ (.getThreadCpuTime mx-bean 26) (* 1000.0 1000 1000)))
+
+    )
 
   (a/thread
     (tap> :start)
@@ -91,17 +111,77 @@
     (tap> :end)
     )
 
+  ;;   L = λ * W
+
+  ;; L - the number of requests processed simultaneously
+  ;; λ – long-term average arrival rate (RPS)
+  ;; W – the average time to handle the request (latency)
+
+  ;; throughput = thread-count / time-in-system
+
+  (defn optimal-thread-count
+    [core-count blocked-time work-time]
+    (* core-count  (+ 1 (/ blocked-time work-time))))
+
+  ;; through-put = thread-count / processing-time
+  ;; thread-count = through-put * processing-time
+  ;; processing-time = thread-count / through-put
+
+  (defn ll-through-put
+    "Little's Law"
+    [thread-count processing-time]
+    (/ thread-count processing-time))
+
+  (defn ll-thread-count
+    "Little's Law"
+    [through-put processing-time]
+    (* through-put processing-time))
+
+  (defn ll-processing-time
+    "Little's Law"
+    [thread-count through-put]
+    (/ thread-count through-put))
+
+
+
+  (ll-thread-count 40 0.16)
+
+  (optimal-thread-count 1 100 100)
+
+  (ll-through-put 2 1)
+
+  (.availableProcessors run-time)
+  (/ (.maxMemory run-time) 1000000.0)
+
 
 
   (try-future
-   
-    (tap> (let [{:keys [tasks inc-task-count dec-task-count]} (p/tasks 10)
+
+   (time
+    (tap> (let [{:keys [tasks inc-task-count dec-task-count]} (p/tasks 4)
                 xfs [
                      {:xf (fn [data]
-                            (Thread/sleep 1000)
+                              (test/rand-work 1000 0)
+                            (tap> {:done data})
+                            ;; (Thread/sleep 1000)
                             ;; (/ 1 0)
-                            (tap> :xf )
-                            (inc data))
+                            ;; (let [now (System/currentTimeMillis)
+                            ;;       start-cpu-time (.getCurrentThreadCpuTime mx-bean)]
+                            ;;   (test/rand-work 1000 0)
+                            ;;   ;; (test/rand-work 100 0)
+                            ;;   ;; (Thread/sleep 100)
+                            ;;   ;; (test/rand-work 500 0)
+
+                            ;;   (let [time-spent (- (System/currentTimeMillis) now)
+                            ;;         cpu-time (Math/round (/(- (.getCurrentThreadCpuTime mx-bean) start-cpu-time)
+                            ;;                                (* 1000 1000.0)))]
+                            ;;     (tap> {:in-xf {:cpu-time          cpu-time
+                            ;;                    :time-spent        time-spent
+                            ;;                    :block-ratio       (/ cpu-time time-spent 1.0)
+                            ;;                    :current-thread-id (.getId (Thread/currentThread))}})))
+                            ;; (tap> :xf )
+                            data
+                            )
                       }
 
                      ;; {:xf (fn [data]
@@ -109,10 +189,10 @@
                      ;;        ;; (inc data)
                      ;;        )
                      ;;  :mult true}
-                     {:xf inc}
-                     {:xf inc}
+                     ;; {:xf inc}
+                     ;; {:xf inc}
                      ]
-                source (wrapped/wrap-source (u/channeled (range 10)) xfs)]
+                source (wrapped/wrapped (u/channeled (range 4)) xfs)]
             (def inc-thread-count inc-task-count)
             (def dec-thread-count dec-task-count)
             (def dec-thread-count dec-task-count)
@@ -126,43 +206,43 @@
              )
 
             )
-          )
-    )
+          ))
+   )
 
- (future (stop dec-thread-count))
+  (future (stop dec-thread-count))
 
   (future
     (tap> (inc-thread-count)))
- (future
-   (dec-thread-count)
-   )
+  (future
+    (dec-thread-count)
+    )
 
- (future
-   (let [start-time   (stat/now)
-         source (u/channeled (map #(hash-map :id %) (range 5)) 2)
-         source (u/channeled (io/reader "resources/test.csv") 3)
-         row->map (u/csv-xf 1000 source)
-         xfs [{:xf row->map
-               :log-count (u/log-count tap> "Processed first xf" 20)}
-              {:xf #(assoc % :step-1 true)}
-              {:xf #(assoc % :step-2 true)}]
-         thread-count 10
-         ;; wrapper (fn [{:keys [pipe data] :as x}]
-         ;;           ((:log-count pipe #(do)))
-         ;;           (-> (update x :transforms (fnil conj []) data)
-         ;;               p/update-x))
-         halt (a/chan)
-         thread-hook (fn [thread-i] (tap> {:thread-i thread-i}))
-         thread-hook #(u/block-on-pred % (atom 5) > halt 1000)
-         worker (p/worker thread-count { ;; :update-x wrapper
-                                        :thread-hook thread-hook
-                                        :halt halt})
-         out (p/flow source (p/as-pipe xfs) worker)]
+  (future
+    (let [start-time   (stat/now)
+          source (u/channeled (map #(hash-map :id %) (range 5)) 2)
+          source (u/channeled (io/reader "resources/test.csv") 3)
+          row->map (u/csv-xf 1000 source)
+          xfs [{:xf row->map
+                :log-count (u/log-count tap> "Processed first xf" 20)}
+               {:xf #(assoc % :step-1 true)}
+               {:xf #(assoc % :step-2 true)}]
+          thread-count 10
+          ;; wrapper (fn [{:keys [pipe data] :as x}]
+          ;;           ((:log-count pipe #(do)))
+          ;;           (-> (update x :transforms (fnil conj []) data)
+          ;;               p/update-x))
+          halt (a/chan)
+          thread-hook (fn [thread-i] (tap> {:thread-i thread-i}))
+          thread-hook #(u/block-on-pred % (atom 5) > halt 1000)
+          worker (p/worker thread-count { ;; :update-x wrapper
+                                         :thread-hook thread-hook
+                                         :halt halt})
+          out (p/flow source (p/as-pipe xfs) worker)]
 
-     (doseq [[status p] (u/as-promises out)]
-       (future (tap> {status    (if (keyword? @p) @p @p)
-                      :duration (/ (- (stat/now) start-time) 1000.0)})))
-     )))
+      (doseq [[status p] (u/as-promises out)]
+        (future (tap> {status    (if (keyword? @p) @p @p)
+                       :duration (/ (- (stat/now) start-time) 1000.0)})))
+      )))
 
 (-> (with-meta {:a 1} {:some :meta})
     (assoc :b 2)

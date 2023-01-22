@@ -1,6 +1,9 @@
 (ns pipeline.wrapped
   (:require [clojure.core.async :as a]))
 
+
+(def mx-bean (java.lang.management.ManagementFactory/getThreadMXBean))
+
 (defn wrapped [source pipeline]
   (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))
         input (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %))))]

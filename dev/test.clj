@@ -10,7 +10,7 @@
     (and (< 1 n) (not-any? #(divides? n %) (range 2 n)))))
 
 (defn work [] ;;about 20ms
-  (dotimes [i 2400]
+  (dotimes [i 3250]
     (prime? i)))
 
 (defn rand-work [ms variance]
