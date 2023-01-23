@@ -50,9 +50,9 @@ with it at any stage in the pipeline.
 
 * Utilities:
 
-- Source can be a collection, a channel, a buffered reader (eg. result of (io/reader "file-name")) or a function returning any of these.
+- Channeled: Source can be a collection, a channel, a buffered reader (eg. result of (io/reader "file-name")) or a function returning any of these.
 
-- Collect results as set of promises.
+- Collecting results as set of promises.
 
 - Log every so many elements, and/or periodically.
 
@@ -85,7 +85,8 @@ done in stages.
 
 Regardless, even with branching the ratio of blocking vs waiting will very
 likely be stable over the run of the job, and thread count should be set
-appropriately. The hooks should help in timing and determining this ratio.
+appropriately to maximize use of cpu time. The hooks should help in timing and
+determining thread count.
 
 Use core.async's pipeline when results need to be ordered. This pipeline
 currentlly makes distinction between blocking and compute work only
