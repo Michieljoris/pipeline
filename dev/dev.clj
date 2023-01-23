@@ -9,7 +9,8 @@
    [clojure.string :as str]
    [clojure.data.csv :as csv]
    [taoensso.timbre :as log]
-   [pipeline.wrapped :as wrapped])
+   [pipeline.wrapped :as wrapped]
+   [pipeline.wrapped :as w])
   )
 
 ;; TODO finish tests
@@ -64,13 +65,8 @@
        (cond-> x
          (not (:i x)) (assoc :i (swap! i inc)) )))))
 
-;; (defn stop-all [worker]
-;;   (loop []
-;;     (when (p/dec-thread-count worker)
-;;       (recur))))
-
- (defn stop [dec-thread-count]
-   (loop [] (when (dec-thread-count) (recur))))
+(defn stop [dec-thread-count]
+  (loop [] (when (dec-thread-count) (recur))))
 
 (defmacro try-future [& body]
   `(future
@@ -79,6 +75,13 @@
       (catch Exception e# (tap> e#)))))
 
 (def mx-bean (java.lang.management.ManagementFactory/getThreadMXBean))
+
+(def os-bean (java.lang.management.ManagementFactory/getOperatingSystemMXBean))
+(doseq [method (into [] (.getDeclaredMethods (.getClass os-bean)))]
+  (tap> method)
+
+  )
+(.getCpuLoad os-bean)
 (def run-time (java.lang.Runtime/getRuntime))
 
 (comment
@@ -123,6 +126,7 @@
     [core-count blocked-time work-time]
     (* core-count  (+ 1 (/ blocked-time work-time))))
 
+
   ;; through-put = thread-count / processing-time
   ;; thread-count = through-put * processing-time
   ;; processing-time = thread-count / through-put
@@ -153,71 +157,67 @@
   (.availableProcessors run-time)
   (/ (.maxMemory run-time) 1000000.0)
 
-
+(time (test/rand-work 100 0))
 
   (try-future
 
    (time
-    (tap> (let [{:keys [tasks inc-task-count dec-task-count]} (p/tasks 4)
-                xfs [
-                     {:xf (fn [data]
-                              (test/rand-work 1000 0)
-                            (tap> {:done data})
-                            ;; (Thread/sleep 1000)
-                            ;; (/ 1 0)
-                            ;; (let [now (System/currentTimeMillis)
-                            ;;       start-cpu-time (.getCurrentThreadCpuTime mx-bean)]
-                            ;;   (test/rand-work 1000 0)
-                            ;;   ;; (test/rand-work 100 0)
-                            ;;   ;; (Thread/sleep 100)
-                            ;;   ;; (test/rand-work 500 0)
+    (let [;; _ (reset! wrapped/task-ratios [])
+          ;; _ (reset! wrapped/cpu-time-a {:last-time 0 :collect []})
+          tasks (p/tasks 30)
+          _ (def tasks tasks)
+          xfs [{:xf (fn [data]
+                      ;; (Thread/sleep 100)
+                      ;; (test/rand-work 500 0)
+                      ;; (tap> {:done data})
+                      ;; (Thread/sleep 1000)
+                      ;; (/ 1 0)
 
-                            ;;   (let [time-spent (- (System/currentTimeMillis) now)
-                            ;;         cpu-time (Math/round (/(- (.getCurrentThreadCpuTime mx-bean) start-cpu-time)
-                            ;;                                (* 1000 1000.0)))]
-                            ;;     (tap> {:in-xf {:cpu-time          cpu-time
-                            ;;                    :time-spent        time-spent
-                            ;;                    :block-ratio       (/ cpu-time time-spent 1.0)
-                            ;;                    :current-thread-id (.getId (Thread/currentThread))}})))
-                            ;; (tap> :xf )
-                            data
-                            )
-                      }
+                      ;; (tap> {:xf data} )
+                      (inc data))
+                }
+               ;; {:xf (fn [data]
+               ;;        (Thread/sleep 500)
+               ;;        (test/rand-work 100 0)
+               ;;        ;; (tap> {:done data})
+               ;;        ;; (Thread/sleep 1000)
+               ;;        ;; (/ 1 0)
 
-                     ;; {:xf (fn [data]
-                     ;;        [(inc data) (inc data)]
-                     ;;        ;; (inc data)
-                     ;;        )
-                     ;;  :mult true}
-                     ;; {:xf inc}
-                     ;; {:xf inc}
-                     ]
-                source (wrapped/wrapped (u/channeled (range 4)) xfs)]
-            (def inc-thread-count inc-task-count)
-            (def dec-thread-count dec-task-count)
-            (def dec-thread-count dec-task-count)
-            (->
-             (p/flow source tasks
+               ;;        ;; (tap> {:xf2 data} )
+               ;;        data
+               ;;        )
+               ;;  }
+
+               ;; {:xf (fn [data]
+               ;;        [(inc data) (inc data)]
+               ;;        ;; (inc data)
+               ;;        )
+               ;;  :mult true}
+               ;; {:xf inc}
+               ;; {:xf inc}
+               ]
+          source (wrapped/wrapped (u/channeled (range 10)) xfs)]
+      (tap> (->
+             (p/flow source tasks ;; (:tasks tasks)
                      {:queue? wrapped/queue?
-                      :work wrapped/thread})
+                      :work   (partial wrapped/thread w/apply-xf)})
              (extract-raw-results)
+             ;; tap>
              ;; :result
              ;; count
-             )
+             ))
 
-            )
-          ))
+      (tap> :done)
+      )
+          )
    )
 
-  (future (stop dec-thread-count))
+  (future (stop #(p/dec-task-count tasks)))
 
-  (future
-    (tap> (inc-thread-count)))
-  (future
-    (dec-thread-count)
-    )
+  (future (tap> (p/inc-task-count tasks)))
+  (future (tap> (p/dec-task-count tasks)))
 
-  (future
+   (future
     (let [start-time   (stat/now)
           source (u/channeled (map #(hash-map :id %) (range 5)) 2)
           source (u/channeled (io/reader "resources/test.csv") 3)

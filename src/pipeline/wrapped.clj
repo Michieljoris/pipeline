@@ -12,7 +12,7 @@
 (defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.
    Handler functions passed to wrapper together with x"
-  [{:keys [data pipeline] :as x} result]
+  [{:keys [data pipeline] :as x}]
   (let [datas (try
                 (let [{:keys [xf mult]} (first pipeline)
                       result (xf data)]
@@ -21,7 +21,7 @@
                     [result]))
                 (catch Throwable t [t]))
         x' (assoc x :pipeline (rest pipeline))]
-    (a/onto-chan! result (map #(assoc x' :data %) datas))))
+    (a/to-chan! (map #(assoc x' :data %) datas))))
 
 (defn queue?
   "Decide on queueing for further processing."
@@ -29,10 +29,74 @@
   (and (seq pipeline) (some? data)
        (not (instance? Throwable data))))
 
+(def task-ratios (atom []))
+
+;; (add-watch task-ratios :k (fn [_ _ _ ratios]
+;;                            (let [ratios (take-last 100 ratios)]
+;;                              (when (pos? (count ratios))
+;;                                (tap> {:task-ratio (/ (reduce + 0 ratios) (count ratios))})))
+;;                          ))
+
+
+(def os-bean (java.lang.management.ManagementFactory/getOperatingSystemMXBean))
+(def cpu-time-a (atom {:last-time 0
+                       :collect []
+                       }))
+
+(add-watch cpu-time-a :k (fn [_ _ _ {:keys [last-time collect total elapsed]}]
+
+                           (when (and (number? elapsed) (zero? elapsed))
+                             (tap>  {:system-cpu-load (.getSystemCpuLoad os-bean)
+                                     :jvm-cpu-load (.getProcessCpuLoad os-bean)})
+                             ;; (tap> total)
+                             )
+                         ;; (tap> {:cpu-time cpu-time})
+                           ;; (let [cpu-time (take-last 100 cpu-time)]
+                           ;;   (tap> {:cpu-time (/ (reduce + 0 cpu-time) 1000.0)}))
+                         ))
+
 (defn thread
   "Default implementation. Receives wrapped data, should call done when work is done, and
    return a channel with results."
-  [x done]
+  [apply-xf x done]
   (let [result (a/chan)]
-    (a/thread (apply-xf x result) (done))
+    (a/thread
+              (let [now (System/currentTimeMillis)
+                    start-cpu-time (.getCurrentThreadCpuTime mx-bean)]
+                (a/pipe (apply-xf x) result)
+                ;; (test/rand-work 100 0)
+                ;; (Thread/sleep 100)
+                ;; (test/rand-work 500 0)
+
+                ;; (let [cpu-time (Math/round (/(- (.getCurrentThreadCpuTime mx-bean) start-cpu-time)
+                ;;                              (* 1000 1000.0)))
+
+                ;;       time-spent (- (System/currentTimeMillis) now)
+                ;;       task-time (- (System/currentTimeMillis) (:queued x))]
+                ;;   ;; (swap! task-ratios conj (/ cpu-time time-spent 1.0))
+                ;;   (swap! cpu-time-a (fn [{:keys [last-time collect]}]
+                ;;                       (if (< last-time (- (System/currentTimeMillis) 1000))
+                ;;                         {:last-time (System/currentTimeMillis)
+                ;;                          :elapsed 0
+                ;;                          :collect [cpu-time]
+                ;;                          :total (reduce + 0 collect)
+                ;;                          }
+                ;;                         {:last-time last-time
+                ;;                          :elapsed (- (System/currentTimeMillis) last-time )
+                ;;                          :collect (conj collect cpu-time)}
+                ;;                         )
+
+                ;;                       ))
+                ;;   ;; (tap> {:block-ratio (/ cpu-time time-spent 1.0)})
+                ;;   ;; (tap> {:in-thread {;; :queued (- now (:queued x))
+                ;;   ;;                    ;; :cpu-time          cpu-time
+                ;;   ;;                    ;; :time-spent        time-spent
+                ;;   ;;                    :block-ratio       (/ cpu-time time-spent 1.0)
+                ;;   ;;                    ;; :task-time task-time
+                ;;   ;;                    ;; :task-ratio (/ time-spent task-time 1.0)
+                ;;   ;;                    ;; :current-thread-id (.getId (Thread/currentThread))
+                ;;   ;;                    }})
+                ;;   )
+                )
+              (done))
     result))
