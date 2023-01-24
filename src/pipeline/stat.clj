@@ -48,9 +48,9 @@
 (defn periodically [f period halt]
   (a/go-loop []
     (let [[_ c] (a/alts! [(a/timeout (* (get-duration-s period) 1000)) halt])]
-         (when-not (= c halt)
-           (f)
-           (recur)))))
+      (when-not (= c halt)
+        (f)
+        (recur)))))
 
 (defn mark-period [max-periods]
   (swap! stats-atom (fn [stat-maps]
@@ -115,7 +115,8 @@
         freq-stats (apply freq/stats (cond-> data
                                        bucket-size (freq/recover-bucket-keys bucket-size)) args)]
     (-> freq-stats
-        (assoc :rate-per-second {:last-10-seconds (rate periods {:range :ten-seconds})
+        (assoc :rate-per-second {:last-second (rate periods {:range :one-second})
+                                 :last-10-seconds (rate periods {:range :ten-seconds})
                                  :last-one-minute (rate periods {:range :one-minute})
                                  :last-five-minutes (rate periods {:range :five-minutes})
                                  :last-fifteen-minutes (rate periods {:range :fifteen-minutes})
@@ -144,4 +145,3 @@
     (add-stat :xf xf-duration)
     (add-stat xf-i xf-duration))
   x)
-

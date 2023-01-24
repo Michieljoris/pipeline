@@ -157,25 +157,49 @@
   (.availableProcessors run-time)
   (/ (.maxMemory run-time) 1000000.0)
 
+  (defn wrap-apply-xf [apply-xf]
+    (let [i (atom -1)]
+      (fn [x]
+       (let [{:keys [log-count log-period]
+              :or {log-count u/noop
+                   log-period u/noop} :as pipe} (first (:pipeline x))]
+         (log-count)
+         (log-period)
+         (let [now (stat/now)
+               c (apply-xf
+                  (cond-> x
+                    (not (:i x)) (assoc :i (swap! i inc))))]
+           (stat/add-stat (keyword (str "xf-" (:i pipe))) (- (stat/now) now))
+           c)))))
+
 (time (test/rand-work 100 0))
 
   (try-future
 
    (time
-    (let [;; _ (reset! wrapped/task-ratios [])
+    (let [_           (def halt (a/chan))
+          _            (stat/init-stats [] 60 halt)
+          start-time   (stat/now)
+          ;; _ (reset! wrapped/task-ratios [])
           ;; _ (reset! wrapped/cpu-time-a {:last-time 0 :collect []})
           tasks (p/tasks 30)
           _ (def tasks tasks)
           xfs [{:xf (fn [data]
                       ;; (Thread/sleep 100)
-                      ;; (test/rand-work 500 0)
+
+                      (test/rand-work 200 0)
                       ;; (tap> {:done data})
                       ;; (Thread/sleep 1000)
                       ;; (/ 1 0)
 
-                      ;; (tap> {:xf data} )
+                      (tap> {:xf data} )
+
                       (inc data))
+                ;; :log-count (u/log-count tap> "hello from xf1", 2)
+                :i 0
                 }
+               {:xf inc
+                :i 1}
                ;; {:xf (fn [data]
                ;;        (Thread/sleep 500)
                ;;        (test/rand-work 100 0)
@@ -196,18 +220,23 @@
                ;; {:xf inc}
                ;; {:xf inc}
                ]
-          source (wrapped/wrapped (u/channeled (range 10)) xfs)]
+          source (wrapped/wrapped (u/channeled (range 100)) xfs)]
       (tap> (->
              (p/flow source tasks ;; (:tasks tasks)
                      {:queue? wrapped/queue?
-                      :work   (partial wrapped/thread w/apply-xf)})
+                      :work   (partial wrapped/thread (wrap-apply-xf w/apply-xf))})
              (extract-raw-results)
              ;; tap>
              ;; :result
              ;; count
              ))
 
-      (tap> :done)
+      (tap> {:stats {:xf-0 (stat/stats :xf-0)
+                     :xf-1 (stat/stats :xf-1)
+                     }
+             :duration (/ (- (stat/now) start-time) 1000.0)})
+
+      (a/close! halt)
       )
           )
    )
@@ -390,7 +419,8 @@
 
  (reset! thread-count 1)
 
- (let [ _           (def halt (a/chan))
+ (let [
+       _           (def halt (a/chan))
        _            (stat/init-stats [] 60 halt)
        _            (tap> :==================================================)
        start-time   (stat/now)
