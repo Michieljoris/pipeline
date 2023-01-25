@@ -22,15 +22,20 @@
      :all (Integer/MAX_VALUE)})
 
 ;; stat fns
-(defn now []
+(defn now
+  "Convenience function that returns now in milliseconds"
+  []
   (c/to-long (t/now)))
 
-(defn mark [x event]
+(defn mark
+  "Convenience function that assoces now in milliseconds to x under the event key"
+  [x event]
   (assoc x event (now)))
 
-(defn update-stat-map [{:keys [bucket-size]
-                        :or {bucket-size 1}
-                        :as stat-map} val]
+(defn update-stat-map
+  [{:keys [bucket-size]
+    :or {bucket-size 1}
+    :as stat-map} val]
   (-> stat-map
       (update-in [:data (cond->> val
                           bucket-size (freq/bucket bucket-size))]
@@ -38,21 +43,26 @@
       (update :total (fnil inc 0))
       (update :period (fnil inc 0))))
 
-(defn add-stat [data-point value]
+(defn add-stat
+  "Add a value to data point"
+  [data-point value]
   (swap! stats-atom update data-point #(update-stat-map % value)))
 
 (defn get-duration-s [kw-or-number]
   (cond->> kw-or-number
     (keyword? kw-or-number) (get durations)))
 
-(defn periodically [f period halt]
+(defn periodically
+  "Executes f every period (in minutes) till halt channel is closed"
+  [f period halt]
   (a/go-loop []
     (let [[_ c] (a/alts! [(a/timeout (* (get-duration-s period) 1000)) halt])]
       (when-not (= c halt)
         (f)
         (recur)))))
 
-(defn mark-period [max-periods]
+(defn mark-period
+  [max-periods]
   (swap! stats-atom (fn [stat-maps]
                       (reduce (fn [stat-maps data-point]
                                 (update stat-maps data-point
@@ -89,26 +99,28 @@
       (log/warn e "Error calculating rate for" args)
       {:error args} )))
 
-(defn init-stats [stat-maps minutes halt]
-  (->> stat-maps
-       (reduce (fn [acc {:keys [data-point bucket-size]}]
-                 (assoc acc data-point {:data {}
-                                        :init-time (now)
-                                        :total 0
-                                        :periods (list)
-                                        :period 0
-                                        :bucket-size bucket-size})) {})
-       (reset! stats-atom))
-  (let [max-periods (/ (* minutes 60) (get-duration-s default-period))]
-    (periodically (partial mark-period max-periods) default-period halt)))
+(defn init-stats
+  "Reset stats atom, and periodically updates it, keeping stats for up to minutes
+   minutes. Returns channel that when closed will stop stat taking"
+  [minutes]
+  ;; (->> stat-maps
+  ;;      (reduce (fn [acc {:keys [data-point bucket-size]}]
+  ;;                (assoc acc data-point {:data {}
+  ;;                                       :init-time (now)
+  ;;                                       :total 0
+  ;;                                       :periods (list)
+  ;;                                       :period 0
+  ;;                                       :bucket-size bucket-size})) {})
+  ;;      (reset! stats-atom))
+  (reset! stats-atom nil)
+  (let [max-periods (/ (* minutes 60) (get-duration-s default-period))
+        halt (a/chan)]
+    (periodically (partial mark-period max-periods) default-period halt)
+    halt))
 
-(defn stop-stats [stop]
-  (reset! stop true))
-
-(defn bucket-stats [bucket-map bucket-size & args]
-  (apply freq/stats (freq/recover-bucket-keys bucket-map bucket-size) args))
-
-(defn stats [data-point & args]
+(defn stats
+  "Returns stats for data-point"
+  [data-point & args]
   (let [{:keys [data bucket-size periods]
          :or {bucket-size 1}}
         (get @stats-atom data-point)
@@ -124,24 +136,10 @@
         (assoc :rate-per-minute {:last-10-seconds (rate periods {:range :ten-seconds
                                                                  :unit :one-minute})
                                  :last-one-minute (rate periods {:range :one-minute
-                                                            :unit :one-minute})
-                                 :last-five-minutes (rate periods {:range :five-minutes
-                                                              :unit :one-minute})
-                                 :last-fifteen-minutes (rate periods {:range :fifteen-minutes
                                                                  :unit :one-minute})
+                                 :last-five-minutes (rate periods {:range :five-minutes
+                                                                   :unit :one-minute})
+                                 :last-fifteen-minutes (rate periods {:range :fifteen-minutes
+                                                                      :unit :one-minute})
                                  :all (rate periods {:range :all
                                                      :unit :one-minute})}))))
-
-;; pipeline stat fns
-(def thread-details (atom []))
-
-(defn xf-stats [{:keys [xfs xf-start-time submit-time queued-time] :as x}]
-  (let [now-ms      (now)
-        step        (-> xfs first :step)
-        xf-i        (keyword (str "xf-" step))
-        xf-duration (- now-ms xf-start-time)]
-    (add-stat :wait (- xf-start-time submit-time))
-    (add-stat :queued (- xf-start-time queued-time))
-    (add-stat :xf xf-duration)
-    (add-stat xf-i xf-duration))
-  x)
