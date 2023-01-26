@@ -3,8 +3,6 @@
    results. Catches any errors and assigns them to :data."
   (:require [clojure.core.async :as a]))
 
-
-
 (defn wrapped
   "Expects a channel as source, wraps elements in a map each bundled with
    pipeline, when pipeline is a function it'll be called on every source element

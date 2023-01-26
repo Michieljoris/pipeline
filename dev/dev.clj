@@ -9,9 +9,9 @@
    [clojure.string :as str]
    [clojure.data.csv :as csv]
    [taoensso.timbre :as log]
-   [pipeline.impl.wrapped :as wrapped]
    [pipeline.impl.wrapped :as w])
   )
+
 
 ;; TODO finish tests
 ;; TODO finish specs
@@ -157,7 +157,26 @@
   (.availableProcessors run-time)
   (/ (.maxMemory run-time) 1000000.0)
 
+  (defn wrap-apply-xf [apply-xf]
+    (let [i (atom -1)]
+      (fn [x]
 
+        (stat/add-stat :queued (- (stat/now) (or (:result-queued x) (:queued x))))
+       (let [{:keys [log-count log-period]
+              :or {log-count u/noop
+                   log-period u/noop} :as pipe} (first (:pipeline x))]
+         (log-count)
+         (log-period)
+         (let [now (stat/now)
+               result-channel (a/chan 1 (map #(assoc % :result-queued (stat/now))))
+               c (apply-xf
+                  (cond-> x
+                    (not (:i x)) (assoc :i (swap! i inc))))]
+           (stat/add-stat (keyword (str "xf-" (:i pipe))) (- (stat/now) now))
+           (a/pipe c result-channel)
+           result-channel
+           ;; c
+           )))))
 
 (time (test/rand-work 100 0))
 
@@ -168,7 +187,7 @@
           start-time   (stat/now)
           ;; _ (reset! wrapped/task-ratios [])
           ;; _ (reset! wrapped/cpu-time-a {:last-time 0 :collect []})
-          tasks (p/tasks 1)
+          tasks (p/tasks 2)
           _ (def tasks tasks)
           xfs [{:xf (fn [data]
                       (Thread/sleep 100)
@@ -206,7 +225,7 @@
                ;; {:xf inc}
                ;; {:xf inc}
                ]
-          source (wrapped/wrapped (u/channeled (range 2)) xfs)
+          source (w/wrapped (u/channeled (range 1)) xfs)
           source' (a/chan 1 (map #(assoc % :queued (stat/now))))
           out (a/chan 1 (map (fn [x]
                                (stat/add-stat :in-system (- (stat/now) (:queued x))) x)))
@@ -215,8 +234,8 @@
       (tap> (->
              (p/flow source' tasks ;; (:tasks tasks)
                      { :out out
-                      :queue? wrapped/queue?
-                      :work   (partial wrapped/thread (wrap-apply-xf w/apply-xf))})
+                      :queue? w/queue?
+                      :work   (partial w/thread (wrap-apply-xf w/apply-xf))})
              (extract-raw-results)
              ;; :result
              ;; count
