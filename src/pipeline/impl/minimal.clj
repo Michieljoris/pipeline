@@ -21,3 +21,8 @@
     (let [x' ((-> pipeline first :xf) x)]
       (done)
       x')))
+
+(defn tasks [task-count]
+  (let [tasks (a/chan task-count)]
+    (dotimes [_ task-count] (a/offer! tasks :t))
+    tasks))

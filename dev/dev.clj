@@ -9,23 +9,25 @@
    [clojure.string :as str]
    [clojure.data.csv :as csv]
    [taoensso.timbre :as log]
-   [pipeline.impl.wrapped :as w])
+   [pipeline.impl.minimal :as m]
+   [pipeline.impl.instrumented :as i]
+   [pipeline.impl.default :as d])
   )
 
 
-;; TODO finish tests
+;; TODO update tests
 ;; TODO finish specs
 ;; TODO: finish readme
 
 ;; TODO: clean up dev
 
 ;; Setting thread count
-;; TODO: Calculate ratio of blocking vs working and log as job is running and take blocking quotient into account!!!!
 ;; TODO: Adjust number of threads on the fly!!!!
 ;; TODO: auto adjust thread count to max throughput, minimal threads, then set to 80% for example
+;; TODO: auto adjust thread count to x % cpu load
 
 ;; Testing for real
- ;; TODO: test with real pipeline.
+ ;; TODO: test with real pipeline, such as hot-companies....
  ;; TODO: benchmark and instrument!!!!
  ;; TODO: inspect all current saigo pipelines, and document, and see if they can use this
  ;; TODO: add throttler
@@ -81,8 +83,11 @@
   (tap> method)
 
   )
-(.getCpuLoad os-bean)
+
 (def run-time (java.lang.Runtime/getRuntime))
+(.getCpuLoad os-bean)
+
+(.availableProcessors run-time)
 
 (comment
 
@@ -154,7 +159,6 @@
 
   (ll-through-put 2 1)
 
-  (.availableProcessors run-time)
   (/ (.maxMemory run-time) 1000000.0)
 
   (defn wrap-apply-xf [apply-xf]
@@ -179,6 +183,83 @@
            )))))
 
 (time (test/rand-work 100 0))
+(try-future
+
+ (let [halt            (stat/init-stats 60)
+       start-time   (stat/now)
+       ;; _ (reset! wrapped/task-ratios [])
+       ;; _ (reset! wrapped/cpu-time-a {:last-time 0 :collect []})
+       tasks (d/tasks 200)
+       _ (def tasks tasks)
+       xfs [{:xf (fn [data]
+                   ;; (Thread/sleep 100)
+
+                   (test/rand-work 200 0)
+                   ;; (tap> {:done data})
+                   ;; (Thread/sleep 1000)
+                   ;; (/ 1 0)
+
+                   ;; (tap> {:xf data} )
+                   (tap> (.getCpuLoad os-bean))
+                   (inc data))
+
+             :log-count (u/log-count tap> "hello from xf1", 10)
+             :i 0
+             }
+            ;; {:xf inc
+            ;;  :i 1}
+            ;; {:xf (fn [data]
+            ;;        (Thread/sleep 500)
+            ;;        (test/rand-work 100 0)
+            ;;        ;; (tap> {:done data})
+            ;;        ;; (Thread/sleep 1000)
+            ;;        ;; (/ 1 0)
+
+            ;;        ;; (tap> {:xf2 data} )
+            ;;        data
+            ;;        )
+            ;;  }
+
+            ;; {:xf (fn [data]
+            ;;        [(inc data) (inc data)]
+            ;;        ;; (inc data)
+            ;;        )
+            ;;  :mult true}
+            ;; {:xf inc}
+            ;; {:xf inc}
+            ]
+       source (m/wrapped (u/channeled (range 10)) xfs)
+       ;; source' (a/chan 1 (map #(assoc % :queued (stat/now))))
+       ;; out (a/chan 1 (map (fn [x]
+       ;;                      (stat/add-stat :in-system (- (stat/now) (:queued x))) x)))
+       ]
+   ;; (a/pipe source source')
+   (tap> (->
+          (p/flow source (m/tasks 10)
+                  ;; (:tasks tasks)
+                  ;; {;; :out (i/out)
+                  ;;  ;; :work   (d/work
+
+                  ;;  ;;          ;; (partial i/apply-xf :i)
+                  ;;  ;;          )
+                  ;;  }
+                  )
+          (extract-raw-results)
+          ;; :result
+          ;; count
+          ))
+
+   ;; (tap> {:stats {:xf-0 (stat/stats :xf-0)
+   ;;                :xf-1 (stat/stats :xf-1)
+   ;;                :in-system (stat/stats :in-system)
+   ;;                :wait (stat/stats :wait)
+   ;;                :xf (stat/stats :xf)}
+   ;;        :duration (/ (- (stat/now) start-time) 1000.0)})
+
+   (a/close! halt)
+   )
+
+ )
 
   (try-future
 
@@ -187,7 +268,7 @@
           start-time   (stat/now)
           ;; _ (reset! wrapped/task-ratios [])
           ;; _ (reset! wrapped/cpu-time-a {:last-time 0 :collect []})
-          tasks (p/tasks 2)
+          tasks (d/tasks 2)
           _ (def tasks tasks)
           xfs [{:xf (fn [data]
                       (Thread/sleep 100)
@@ -225,17 +306,17 @@
                ;; {:xf inc}
                ;; {:xf inc}
                ]
-          source (w/wrapped (u/channeled (range 1)) xfs)
+          source (d/wrapped (u/channeled (range 1)) xfs)
           source' (a/chan 1 (map #(assoc % :queued (stat/now))))
           out (a/chan 1 (map (fn [x]
                                (stat/add-stat :in-system (- (stat/now) (:queued x))) x)))
           ]
       (a/pipe source source')
       (tap> (->
-             (p/flow source' tasks ;; (:tasks tasks)
+             (p/flow source' (:tasks tasks)
                      { :out out
-                      :queue? w/queue?
-                      :work   (partial w/thread (wrap-apply-xf w/apply-xf))})
+                      :queue? d/queue?
+                      :work   (partial d/thread (wrap-apply-xf d/apply-xf))})
              (extract-raw-results)
              ;; :result
              ;; count
@@ -253,10 +334,10 @@
           )
    )
 
-  (future (stop #(p/dec-task-count tasks)))
+  (future (stop #(d/dec-task-count tasks)))
 
-  (future (tap> (p/inc-task-count tasks)))
-  (future (tap> (p/dec-task-count tasks)))
+  (future (tap> (d/inc-task-count tasks)))
+  (future (tap> (d/dec-task-count tasks)))
 
    (future
     (let [start-time   (stat/now)

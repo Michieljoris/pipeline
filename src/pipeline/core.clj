@@ -2,6 +2,7 @@
   (:require [clojure.core.async :as a]
             [clojure.spec.alpha :as s]
             [clojure.spec.test.alpha :as stest]
+            [pipeline.impl.default :as d]
             [pipeline.util :as u]))
 
 (defn flow
@@ -13,55 +14,36 @@
    put to result channel in a callback) and return a channel with zero or more
    results, which should close once all results are put on the channel. Once
    work is finished done, a no arg function, should be called so the task can be
-   released.
+   released. Tasks should be channel with filled buffer sized to desired maximum
+   concurrency/parallelism task count.
 
    Returns out channel "
-  [source {:keys [tasks]} {:keys [out close? queue? work]
-                           :or   {close? true out (a/chan)}}]
-  (let [monitor (atom 0)
-        check-in #(swap! monitor inc)
-        check-out #(when (and (zero? (swap! monitor dec)) close?)
-                     (a/close! out))]
+  ([source tasks] (flow source tasks nil))
+  ([source tasks {:keys [out close? queue? work]
+                  :or   {close? true     out  (a/chan)
+                         queue? d/queue? work (d/work)}}]
+   (let [monitor (atom 0)
+         check-in #(swap! monitor inc)
+         check-out #(when (and (zero? (swap! monitor dec)) close?)
+                      (a/close! out))]
 
-    (check-in)
+     (check-in)
 
-    (a/go-loop [inputs #{source}]
-      (when (seq inputs)
-        (let [[x input] (a/alts! (vec inputs))]
-          (if (nil? x)
-            (do
-              (check-out)
-              (recur (disj inputs input))) ;;end of input
-            (if (queue? x)
-              (do
-                (check-in)
-                (a/<! tasks) ;;wait for task to be available
-                (recur (conj inputs (work x #(a/>!! tasks :t)))))
-              (do (a/>! out x)
-                  (recur inputs)))))))
-    out))
-
-(defn inc-task-count [{:keys [task-count tasks]}]
-  (when (a/offer! tasks :t)
-    (swap! task-count inc)))
-
-(defn dec-task-count  [{:keys [task-count tasks]}]
-  (let [[old new] (swap-vals! task-count
-                              #(cond-> % (pos? %) dec))]
-    (when (< new old)
-      (a/go (a/<! tasks)))))
-
-(defn tasks
-  "Returns map with stateful tasks data."
-  ([] (tasks 0))
-  ([task-count] (tasks task-count 1000))
-  ([initial-task-count max-task-count]
-   (let [tasks (a/chan max-task-count)
-         task-count (atom 0)
-         state {:tasks          tasks
-                :task-count     task-count}]
-     (dotimes [_ initial-task-count] (inc-task-count state))
-     state)))
+     (a/go-loop [inputs #{source}]
+       (when (seq inputs)
+         (let [[x input] (a/alts! (vec inputs))]
+           (if (nil? x)
+             (do
+               (check-out)
+               (recur (disj inputs input))) ;;end of input
+             (if (queue? x)
+               (do
+                 (check-in)
+                 (a/<! tasks) ;;wait for task to be available
+                 (recur (conj inputs (work x #(a/>!! tasks :t)))))
+               (do (a/>! out x)
+                   (recur inputs)))))))
+     out)))
 
 ;;TODO: finish specs
 (s/def ::xf fn?)

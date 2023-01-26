@@ -1,4 +1,4 @@
-(ns pipeline.impl.wrapped
+(ns pipeline.impl.default
   "Runs tasks in threads, when :mult flag is set to true on xf expects multiple
    results. Catches any errors and assigns them to :data."
   (:require [clojure.core.async :as a]))
@@ -38,6 +38,34 @@
   "Receives wrapped data as x, should call apply-xf on x and then done, and
    return a channel with results."
   [apply-xf x done]
+  (tap> {:thread x})
   (let [result (a/chan)]
     (a/thread (a/pipe (apply-xf x) result) (done))
     result))
+
+(defn work
+  ([] (work apply-xf))
+  ([apply-xf]
+   (partial thread apply-xf)))
+
+(defn inc-task-count [{:keys [task-count tasks]}]
+  (when (a/offer! tasks :t)
+    (swap! task-count inc)))
+
+(defn dec-task-count  [{:keys [task-count tasks]}]
+  (let [[old new] (swap-vals! task-count
+                              #(cond-> % (pos? %) dec))]
+    (when (< new old)
+      (a/go (a/<! tasks)))))
+
+(defn tasks
+  "Returns map with stateful tasks data."
+  ([] (tasks 0))
+  ([task-count] (tasks task-count 1000))
+  ([initial-task-count max-task-count]
+   (let [tasks (a/chan max-task-count)
+         task-count (atom 0)
+         state {:tasks          tasks
+                :task-count     task-count}]
+     (dotimes [_ initial-task-count] (inc-task-count state))
+     state)))
