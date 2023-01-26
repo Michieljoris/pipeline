@@ -4,11 +4,12 @@
    [pipeline.core :as p]
    [test.util :refer [=tap wrap-apply-xf extract-results
                       extract-raw-results]]
-   [pipeline.wrapped :as w]
+   [pipeline.impl.wrapped :as w]
    [pipeline.util :as u]
    [clojure.test :refer :all]))
 
 ;; TEST:
+;; minimal pipeline
 ;;- adjust thread count on the fly
 (comment
   (future
@@ -236,8 +237,7 @@
 
                           (p/tasks 1)
                           {:queue? w/queue?
-                           :work   (partial w/thread apply-xf)
-                           })
+                           :work   (partial w/thread apply-xf)})
                   extract-results
                   :result
                   (sort-by first)))))))

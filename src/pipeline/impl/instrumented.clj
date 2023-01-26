@@ -1,5 +1,7 @@
-(ns pipeline.wrapped
-  (:require [clojure.core.async :as a]))
+(ns pipeline.impl.instrumented
+  (:require [clojure.core.async :as a]
+            [pipeline.stat :as stat]
+            [pipeline.util :as u]))
 
 
 (def mx-bean (java.lang.management.ManagementFactory/getThreadMXBean))
@@ -8,6 +10,27 @@
   (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))
         input (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %))))]
     (a/pipe source input)))
+
+(defn wrap-apply-xf [apply-xf]
+    (let [i (atom -1)]
+      (fn [x]
+
+        (stat/add-stat :queued (- (stat/now) (or (:result-queued x) (:queued x))))
+       (let [{:keys [log-count log-period]
+              :or {log-count u/noop
+                   log-period u/noop} :as pipe} (first (:pipeline x))]
+         (log-count)
+         (log-period)
+         (let [now (stat/now)
+               result-channel (a/chan 1 (map #(assoc % :result-queued (stat/now))))
+               c (apply-xf
+                  (cond-> x
+                    (not (:i x)) (assoc :i (swap! i inc))))]
+           (stat/add-stat (keyword (str "xf-" (:i pipe))) (- (stat/now) now))
+           (a/pipe c result-channel)
+           result-channel
+           ;; c
+           )))))
 
 (defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.

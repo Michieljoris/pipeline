@@ -9,8 +9,8 @@
    [clojure.string :as str]
    [clojure.data.csv :as csv]
    [taoensso.timbre :as log]
-   [pipeline.wrapped :as wrapped]
-   [pipeline.wrapped :as w])
+   [pipeline.impl.wrapped :as wrapped]
+   [pipeline.impl.wrapped :as w])
   )
 
 ;; TODO finish tests
@@ -157,26 +157,7 @@
   (.availableProcessors run-time)
   (/ (.maxMemory run-time) 1000000.0)
 
-  (defn wrap-apply-xf [apply-xf]
-    (let [i (atom -1)]
-      (fn [x]
 
-        (stat/add-stat :queued (- (stat/now) (or (:result-queued x) (:queued x))))
-       (let [{:keys [log-count log-period]
-              :or {log-count u/noop
-                   log-period u/noop} :as pipe} (first (:pipeline x))]
-         (log-count)
-         (log-period)
-         (let [now (stat/now)
-               result-channel (a/chan 1 (map #(assoc % :result-queued (stat/now))))
-               c (apply-xf
-                  (cond-> x
-                    (not (:i x)) (assoc :i (swap! i inc))))]
-           (stat/add-stat (keyword (str "xf-" (:i pipe))) (- (stat/now) now))
-           (a/pipe c result-channel)
-           result-channel
-           ;; c
-           )))))
 
 (time (test/rand-work 100 0))
 
