@@ -12,7 +12,7 @@
   [x]
   (seq (:pipeline x)))
 
-(defn thread
+(defn work
   "Minimal implementation. Receives wrapped data, calls xf on it, then done, and
    returns a channel with result. Expects xf to update the
    pipeline (usually (rest pipeline))."

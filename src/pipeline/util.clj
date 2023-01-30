@@ -153,7 +153,6 @@
   [ms csv-source]
   (if-let [[header-str _] (a/alts!! [csv-source (a/timeout ms)])]
     (let [headers (map keyword (str/split header-str #","))]
-      (tap> {:headers headers  })
       (fn [row]
         (let [columns (str/split row #",")]
           (zipmap headers columns))))

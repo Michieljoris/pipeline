@@ -9,9 +9,8 @@
    and should return a pipeline (list of maps each with a transforming function
    under the :xf key)."
   [source pipeline]
-  (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))
-        input (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %))))]
-    (a/pipe source input)))
+  (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))]
+    (a/pipe source (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %)))))))
 
 (defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.
@@ -34,38 +33,35 @@
   (and (seq pipeline) (some? data)
        (not (instance? Throwable data))))
 
-(defn thread
+(defn work
   "Receives wrapped data as x, should call apply-xf on x and then done, and
    return a channel with results."
-  [apply-xf x done]
-  (tap> {:thread x})
-  (let [result (a/chan)]
-    (a/thread (a/pipe (apply-xf x) result) (done))
-    result))
+  ([x done] (work apply-xf x done))
+  ([apply-xf x done]
+   (let [result (a/chan)]
+     (a/thread (a/pipe (apply-xf x) result) (done))
+     result)))
 
-(defn work
-  ([] (work apply-xf))
-  ([apply-xf]
-   (partial thread apply-xf)))
+(def task-count (atom 0))
 
-(defn inc-task-count [{:keys [task-count tasks]}]
+(defn inc-task-count
+  [tasks]
   (when (a/offer! tasks :t)
     (swap! task-count inc)))
 
-(defn dec-task-count  [{:keys [task-count tasks]}]
+(defn dec-task-count
+  [tasks]
   (let [[old new] (swap-vals! task-count
                               #(cond-> % (pos? %) dec))]
     (when (< new old)
       (a/go (a/<! tasks)))))
 
 (defn tasks
-  "Returns map with stateful tasks data."
+   "Returns tasks channel"
   ([] (tasks 0))
-  ([task-count] (tasks task-count 1000))
+  ([initial-task-count] (tasks initial-task-count 1000))
   ([initial-task-count max-task-count]
-   (let [tasks (a/chan max-task-count)
-         task-count (atom 0)
-         state {:tasks          tasks
-                :task-count     task-count}]
-     (dotimes [_ initial-task-count] (inc-task-count state))
-     state)))
+   (let [tasks (a/chan max-task-count)]
+     (reset! task-count 0)
+     (dotimes [_ initial-task-count] (inc-task-count tasks))
+     tasks)))

@@ -1,6 +1,6 @@
 (ns pipeline.impl.instrumented
   (:require [clojure.core.async :as a]
-            [pipeline.impl.wrapped :as w]
+            [pipeline.impl.default :as d]
             [pipeline.stat :as stat]
             [pipeline.util :as u]))
 
@@ -26,7 +26,7 @@
      (log-period)
      (let [ts-before-apply-xf (stat/now)
            result-channel (a/chan 1 (map #(assoc % :ts-result-queued (stat/now))))
-           c (w/apply-xf x)
+           c (d/apply-xf x)
            duration (- (stat/now) ts-before-apply-xf)]
        (stat/add-stat (keyword (str "xf-" (pipe-id-fn pipe))) duration)
        (stat/add-stat (keyword (str "xf")) duration)

@@ -4,41 +4,26 @@
    [pipeline.core :as p]
    [test.util :refer [=tap wrap-apply-xf extract-results
                       extract-raw-results]]
-   [pipeline.impl.wrapped :as w]
+   [pipeline.impl.default :as d]
+   [pipeline.impl.minimal :as m]
+   [pipeline.impl.instrumented :as i]
    [pipeline.util :as u]
    [clojure.test :refer :all]))
 
-;; TEST:
-;; minimal pipeline
-;;- adjust thread count on the fly
-(comment
-  (future
-    (tap>
-    1
-     )
-     
-    ;; (->> (p/flow (w/wrapped (u/channeled (range 5))
-    ;;                         [{:xf #(when (even? %) %)}
-    ;;                          {:xf inc}])
-    ;;              (p/tasks 1)
-    ;;              {:queue? w/queue?
-    ;;               :work   (partial w/thread (wrap-apply-xf w/apply-xf))}
-    ;;              )
-    ;;      extract-raw-results)
-    ;;)
+(defn wrap-and-number [source pipeline]
+  (let [input (d/wrapped source pipeline)
+        numbered (a/chan 1 (map-indexed (fn [i x] (assoc x :i i))))]
+    (a/pipe input numbered)))
 
-
-    ))
 
 (deftest flow-test
   (testing "Simple pipeline"
-    (is (= (->> (p/flow (w/wrapped (u/channeled (range 5))
-                                   [{:xf inc}
-                                    {:xf inc}])
-                  (p/tasks 1)
-                  {:queue? w/queue?
-                   :work   (partial w/thread (wrap-apply-xf w/apply-xf))})
-          extract-raw-results)
+    (is (= (->> (d/tasks 1)
+                (p/flow (wrap-and-number
+                         (u/channeled (range 5))
+                         [{:xf inc}
+                          {:xf inc}]))
+                extract-raw-results)
            {:result [{:pipeline '()
                       :data 2
                       :i    0}
@@ -56,12 +41,11 @@
                       :i    4}]})))
 
   (testing "Returning nil from xf stops further processing "
-    (is (= (->> (p/flow (w/wrapped (u/channeled (range 5))
-                                   [{:xf #(when (even? %) %)}
-                                    {:xf inc}])
-                        (p/tasks 1)
-                        {:queue? w/queue?
-                         :work   (partial w/thread (wrap-apply-xf w/apply-xf))})
+    (is (= (->> (p/flow (wrap-and-number
+                         (u/channeled (range 5))
+                         [{:xf #(when (even? %) %)}
+                          {:xf inc}])
+                        (m/tasks 1))
                 extract-raw-results)
            {:result     [{:pipeline '()
                           :data 1
@@ -80,13 +64,12 @@
                           :i    3}]})))
 
   (testing "Return multiple results from xf and process each"
-    (is (= (->> (p/flow (w/wrapped (u/channeled (range 2))
-                                   [{:xf   #(vector (+ 100 %) (+ 200 %))
-                                     :mult true}
-                                    {:xf inc}])
-                        (p/tasks 1)
-                        {:queue? w/queue?
-                         :work   (partial w/thread (wrap-apply-xf w/apply-xf))})
+    (is (= (->> (p/flow (wrap-and-number
+                         (u/channeled (range 2))
+                         [{:xf   #(vector (+ 100 %) (+ 200 %))
+                           :mult true}
+                          {:xf inc}])
+                        (d/tasks 1))
                 extract-raw-results
                 :result
                 (sort-by :data))
@@ -106,17 +89,16 @@
   (testing "Exceptions in xf are caught and assigned to data key"
     (let [{:keys [result error]}
           (let [{:keys [result error]}
-           (->> (p/flow (w/wrapped (u/channeled (range 2))
-                                   [{:xf   #(vector (+ 100 %) (+ 200 %))
-                                     :mult true}
-                                    {:xf (fn [data] (if (= data 100)
-                                                      (throw (ex-info "we don't like data being 100"
-                                                                      {:data data}))
-                                                      data))}
-                                    {:xf inc}])
-                        (p/tasks 1)
-                        {:queue? w/queue?
-                         :work   (partial w/thread (wrap-apply-xf w/apply-xf))})
+                (->> (p/flow (wrap-and-number
+                              (u/channeled (range 2))
+                              [{:xf   #(vector (+ 100 %) (+ 200 %))
+                                :mult true}
+                               {:xf (fn [data] (if (= data 100)
+                                                 (throw (ex-info "we don't like data being 100"
+                                                                 {:data data}))
+                                                 data))}
+                               {:xf inc}])
+                        (d/tasks 1))
                 extract-raw-results)]
        {:result result :error error})]
 
@@ -135,35 +117,29 @@
       (is (= (ex-data (:data (first error))) {:data 100}))))
 
   (testing "Using same tasks for two sources"
-    (let [tasks (p/tasks 1)
-          out1 (p/flow (w/wrapped (u/channeled (range 5))
+    (let [tasks (d/tasks 1)
+          out1 (p/flow (d/wrapped (u/channeled (range 5))
                                   [{:xf inc}
                                    {:xf inc}])
-                       tasks
-                       {:queue? w/queue?
-                        :work   (partial w/thread w/apply-xf)})
-          out2 (p/flow (w/wrapped (u/channeled (map (partial + 10) (range 5)))
+                       tasks)
+          out2 (p/flow (d/wrapped (u/channeled (map (partial + 10) (range 5)))
                                   [{:xf inc}
                                    {:xf inc}])
-                       tasks
-                       {:queue? w/queue?
-                        :work   (partial w/thread w/apply-xf)})]
+                       tasks)]
       (is (= [2 3 4 5 6] (sort (:result (extract-results out1)))))
       (is (= [12 13 14 15 16] (sort (:result (extract-results out2)))))))
 
   (testing "Apply different pipe to each source element"
     (is (=
          (sort [2 21 4 23 6])
-         (->> (p/flow (w/wrapped (u/channeled (range 5))
+         (->> (p/flow (d/wrapped (u/channeled (range 5))
                                  (fn [s]
                                    (if (even? s)
                                      [{:xf inc}
                                       {:xf inc}]
                                      [{:xf (partial + 10)}
                                       {:xf (partial + 10)}])))
-                      (p/tasks 1)
-                      {:queue? w/queue?
-                       :work   (partial w/thread w/apply-xf)})
+                      (d/tasks 1))
               extract-results
               :result
               sort))))
@@ -174,18 +150,16 @@
           pipe2 [{:xf #(conj % :xf3)}
                  {:xf #(conj % :xf4)}]
           apply-xf (fn [x]
-                     (let [c (w/apply-xf x)
+                     (let [c (d/apply-xf x)
                            result (a/chan 1 (map (fn [{:keys [data] :as x}]
                                                    (cond-> x
                                                      (and (even? (first data))
                                                           (< (count data) 3)) (assoc :pipeline pipe2)))))]
 
                        (a/pipe c result)))]
-      (is (= (->> (p/flow (w/wrapped (u/channeled (map vector (range 5))) pipe1)
-                          (p/tasks 1)
-                          {:queue? w/queue?
-                           :work   (partial w/thread apply-xf)}
-                          )
+      (is (= (->> (p/flow (d/wrapped (u/channeled (map vector (range 5))) pipe1)
+                          (d/tasks 1)
+                          {:work   (partial d/work apply-xf)})
                   extract-results
                   :result
                   (sort-by first))
@@ -209,10 +183,9 @@
                                               (rest pipeline)))
                            vector
                            (->> (a/onto-chan! result)))))]
-      (is (= (->> (p/flow (w/wrapped (u/channeled (map vector (range 5))) pipe1)
-                          (p/tasks 1)
-                          {:queue? w/queue?
-                           :work   (fn [x done]
+      (is (= (->> (p/flow (d/wrapped (u/channeled (map vector (range 5))) pipe1)
+                          (d/tasks 1)
+                          {:work   (fn [x done]
                                      (let [result (a/chan)]
                                        (a/thread (apply-xf x result)
                                                  (done))
@@ -231,13 +204,12 @@
                      (let [{:keys [pipeline] :as x'} ((->> x :pipeline first :xf) x) ]
                        (a/to-chan! [(assoc x' :pipeline (rest pipeline))])))]
       (is (= '([0 :xf1 :xf2] [1 :xf1 :xf2] [2 :xf1 :xf2])
-             (->> (p/flow (w/wrapped (u/channeled (map vector (range 3)))
+             (->> (p/flow (d/wrapped (u/channeled (map vector (range 3)))
                                      [{:xf #(update % :data conj :xf1)}
                                       {:xf #(update % :data conj :xf2)}])
 
-                          (p/tasks 1)
-                          {:queue? w/queue?
-                           :work   (partial w/thread apply-xf)})
+                          (d/tasks 1)
+                          {:work   (partial d/work apply-xf)})
                   extract-results
                   :result
                   (sort-by first)))))))

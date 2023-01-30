@@ -44,13 +44,10 @@
         (extract-raw-results out)))
 
 (defn wrap-apply-xf [apply-xf]
-  (let [i (atom -1)]
-    (fn [x]
-      ((:log-count (first (:pipeline x)) #(do)))
-      ((:log-period (first (:pipeline x)) #(do)))
-      (apply-xf
-       (cond-> x
-         (not (:i x)) (assoc :i (swap! i inc)))))))
+  (fn [x]
+    ((:log-count (first (:pipeline x)) #(do)))
+    ((:log-period (first (:pipeline x)) #(do)))
+    (apply-xf x)))
 
 (defn =tap [a b]
   (tap> {:result a :expected b})

@@ -3,7 +3,8 @@
    [clojure.core.async :as a]
    [clojure.java.io :as io]
    [pipeline.core :as p]
-   [pipeline.wrapped :as w]
+   [pipeline.impl.default :as d]
+   [pipeline.impl.instrumented :as i]
    [test.util :refer [wrap-apply-xf extract-results]]
    [pipeline.util :as u]
    [clojure.test :refer :all]))
@@ -12,44 +13,45 @@
   (testing "log-count"
     (let [log-events (atom [])
           log (fn [m] (swap! log-events conj m))
-          result (->> (p/flow (w/wrapped (u/channeled (range 4))
+          result (->> (p/flow (d/wrapped (u/channeled (range 4))
                                          [{:xf        inc
                                            :log-count (u/log-count log "xf1 msg" 1)}
                                           {:xf        inc
                                            :log-count (u/log-count log "xf2 msg" 2)
                                            }])
-                              (p/tasks 1)
-                              {:work   (partial w/thread (wrap-apply-xf w/apply-xf))
-                               :queue? w/queue?})
+                              (d/tasks 1)
+                              {:work   (partial d/work (wrap-apply-xf d/apply-xf))})
                       extract-results)]
-      (is (= result {:result [2 3 4 5]}))
+      (is (= (update result :result sort) {:result [2 3 4 5]}))
 
-      (is (= (set @log-events) (set [["xf1 msg" :count 0]
-                                     ["xf2 msg" :count 0]
-                                     ["xf1 msg" :count 1]
-                                     ["xf1 msg" :count 2]
-                                     ["xf2 msg" :count 2]
-                                     ["xf1 msg" :count 3]])))))
+      (is (= (set [["xf1 msg" :count 0]
+                   ["xf2 msg" :count 0]
+                   ["xf1 msg" :count 1]
+                   ["xf1 msg" :count 2]
+                   ["xf2 msg" :count 2]
+                   ["xf1 msg" :count 3]]) (set @log-events)))))
   (testing "log-period logs less with higher interval"
     (let [log-events (atom [])
           log (fn [m] (swap! log-events conj m))
           log-events-1 (do
-                         (->> (p/flow (w/wrapped (u/channeled (range 10000))
+                         (->> (p/flow (d/wrapped (u/channeled (range 10000))
                                                  [{:xf         inc
                                                    :log-period (u/log-period log "xf1 msg" 40)}])
-                                      (p/tasks 1)
-                                      {:work   (partial w/thread (wrap-apply-xf w/apply-xf))
-                                       :queue? w/queue?})
+                                      (d/tasks 1)
+                                      ;; {:work   (partial w/thread (wrap-apply-xf w/apply-xf))
+                                      ;;  :queue? w/queue?}
+                                      )
                               extract-results)
                          @log-events)
           _ (reset! log-events [])
           log-events-2 (do
-                         (->> (p/flow (w/wrapped (u/channeled (range 10000))
+                         (->> (p/flow (d/wrapped (u/channeled (range 10000))
                                                  [{:xf         inc
                                                    :log-period (u/log-period log "xf1 msg" 10)}])
-                                      (p/tasks 1)
-                                      {:work   (partial w/thread (wrap-apply-xf w/apply-xf))
-                                       :queue? w/queue?})
+                                      (d/tasks 1)
+                                      ;; {:work   (partial w/thread (wrap-apply-xf w/apply-xf))
+                                      ;;  :queue? w/queue?}
+                                      )
                               extract-results)
                          @log-events)]
       (is (<= (count log-events-1) (count log-events-2))))))
@@ -105,12 +107,10 @@
       (is (= [{:foo :bar
                :bar "2"}
               {:foo :bar
-               :bar "4"}] (->> (p/flow (w/wrapped source
+               :bar "4"}] (->> (p/flow (d/wrapped source
                                                   [{:xf (u/csv-xf 1000 source)}
                                                    {:xf #(assoc % :foo :bar)}])
-                                       (p/tasks 1)
-                                       {:queue? w/queue?
-                                        :work   (partial w/thread w/apply-xf)})
+                                       (d/tasks 1))
                                extract-results
                                :result
                                (sort-by :bar)))))))

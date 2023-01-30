@@ -15,7 +15,7 @@
   )
 
 
-;; TODO update tests
+;; DONE update tests
 ;; TODO finish specs
 ;; TODO: finish readme
 
@@ -183,6 +183,43 @@
            )))))
 
 (time (test/rand-work 100 0))
+(defn number-input [input]
+  (let [numbered (a/chan 1 (map-indexed (fn [i x] (assoc x :i i))))]
+    (a/pipe input numbered)))
+(try-future
+ (let [pipe1 [{:xf #(conj % :xf1) :pipe 1}
+              {:xf #(conj % :xf2) :pipe 1}]
+       pipe2 [{:xf #(conj % :xf3) :pipe 2}
+              {:xf #(conj % :xf4) :pipe 2}]
+       apply-xf (fn [{:keys [data pipeline] :as x} result]
+                  (let [data' ((-> pipeline first :xf) data)]
+                    (-> (assoc x :data data')
+                        (assoc :pipeline (if (and (even? (first data))
+                                                  (< (count data) 2))
+                                           pipe2
+                                           (rest pipeline)))
+                        vector
+                        (->> (a/onto-chan! result)))))]
+   (tap> (->> (p/flow (d/wrapped (u/channeled (map vector (range 5))) pipe1)
+                      (d/tasks 1)
+                      {:work   (fn [x done]
+                                     (let [result (a/chan)]
+                                       (a/thread (apply-xf x result)
+                                                 (done))
+                                       result))})
+              extract-results
+              :result
+              (sort-by first)))
+   ;; [[0 :xf1 :xf3 :xf4]
+   ;;  [1 :xf1 :xf2]
+   ;;  [2 :xf1 :xf3 :xf4]
+   ;;  [3 :xf1 :xf2]
+   ;;  [4 :xf1 :xf3 :xf4]]
+   )
+
+ )
+
+
 (try-future
 
  (let [halt            (stat/init-stats 60)
@@ -203,7 +240,7 @@
                    (tap> (.getCpuLoad os-bean))
                    (inc data))
 
-             :log-count (u/log-count tap> "hello from xf1", 10)
+             ;; :log-count (u/log-count tap> "hello from xf1", 10)
              :i 0
              }
             ;; {:xf inc
@@ -235,8 +272,9 @@
        ]
    ;; (a/pipe source source')
    (tap> (->
-          (p/flow source (m/tasks 10)
-                  ;; (:tasks tasks)
+          (p/flow source
+                  ;; (d/tasks 10)
+                  (:tasks tasks)
                   ;; {;; :out (i/out)
                   ;;  ;; :work   (d/work
 
