@@ -1,5 +1,6 @@
 (ns pipeline.impl.minimal
-  (:require [clojure.core.async :as a]))
+  (:require [clojure.core.async :as a]
+            [clojure.spec.alpha :as s]))
 
 (defn wrapped
   "Wraps and bundles source elements with the pipeline."
@@ -26,3 +27,15 @@
   (let [tasks (a/chan task-count)]
     (dotimes [_ task-count] (a/offer! tasks :t))
     tasks))
+
+;;TODO: finish specs
+(s/def ::chan #(instance? clojure.core.async.impl.channels.ManyToManyChannel %))
+(s/def ::xf fn?)
+(s/def ::xf (s/keys :req-un [::xf]))
+(s/def ::pipeline (s/and (s/coll-of ::xf) seq))
+(s/def ::source ::chan)
+
+(s/fdef work
+  :args (s/cat  :x ::x
+                :done fn?)
+  :ret ::x)

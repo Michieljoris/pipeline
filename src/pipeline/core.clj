@@ -45,45 +45,19 @@
                    (recur inputs)))))))
      out)))
 
-;;TODO: finish specs
-(s/def ::xf fn?)
-(s/def ::apply-xf fn?)
-(s/def ::enqueue fn?)
-(s/def ::hook  fn?)
-(s/def ::task-count pos-int?)
-(s/def ::queue-count pos-int?)
 (s/def ::chan #(instance? clojure.core.async.impl.channels.ManyToManyChannel %))
-(s/def ::halt ::chan)
-(s/def ::xf (s/keys :req-un [::xf]))
-(s/def ::next (s/nilable ::pipe))
-(s/def ::pipe (s/keys :req-un [::xf ::next]))
-(s/def ::xfs (s/and (s/coll-of ::xf) seq))
-(s/def ::worker-opts (s/keys :opt-un [::queue-count ::hook ::halt ::apply-xf ::enqueue]))
-(s/def ::source (s/or :buffered-reader u/buffered-reader?  :coll coll? :channel u/channel? :fn fn?))
-
-(s/fdef worker
-  :args (s/cat  :task-count ::task-count
-                :opts ::worker-opts)
-  :ret ::chan)
-
-(s/fdef as-pipe
-  :args (s/cat  :xfs ::xfs
-                ::ofsett pos-int?)
-  :ret ::pipe)
+(s/def ::close? boolean?)
+(s/def ::out ::chan)
+(s/def ::queue? fn?)
+(s/def ::work fn?)
+(s/def ::source ::chan)
+(s/def ::flow-opts (s/keys :opt-un [:close? ::out ::queue? ::work]))
 
 (s/fdef flow
-  :args (s/cat  :in ::chan
-                :pipe ::pipe
-                :worker ::chan
+  :args (s/cat  :source ::chan
+                :tasks ::chan
                 :opts ::flow-opts)
   :ret ::chan)
 
 ;; (stest/instrument
-;;  `[worker
-;;    as-pipe
-;;    flow])
-
-   ;; (u/assert-spec ::worker-args {:task-count task-count :opts opts} )
-
-  ;; (s/alt :nullary (s/cat)
-  ;;              :unary (s/cat :config ::config))
+;;  `[flow])

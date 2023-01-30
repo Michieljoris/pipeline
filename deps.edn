@@ -9,10 +9,4 @@
            org.clojure/core.memoize            {:mvn/version "0.5.8"}
            org.clojure/data.csv                {:mvn/version "1.0.1"}
            org.clojure/tools.namespace         {:mvn/version "0.2.11"}}
- :aliases {:dev {:extra-paths ["dev"]
-                 ;; :extra-deps  {com.stuartsierra/component      {:mvn/version "_"}
-                 ;;               com.stuartsierra/component.repl {:mvn/version "_"}
-                 ;;               org.clojure/tools.namespace     {:mvn/version "_"}}
-                 }
-           }
- }
+ :aliases {:dev {:extra-paths ["dev"]}}}
