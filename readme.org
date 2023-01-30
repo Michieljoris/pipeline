@@ -15,7 +15,7 @@ elements need to carry data to make that decision. Similar to the `work`
 function which will also have to inspect the data to decide on how to process
 it.
 
-Advantages of a decent abstraction:
+Advantages of this abstraction:
 
 - Because decisions on processing are made by inspecting data elements
   themselves pipelines can be dynamic and adapted to each element at any stage.
@@ -38,7 +38,7 @@ Advantages of a decent abstraction:
   the wrapped data element.
 
 
-* An implementation: pipeline.wrapped
+* An implementation: pipeline.default
 
 Transforming functions are defined in a list of maps, each of which should have
 at least one entry under the :xf key, namely the transforming function. This
@@ -52,7 +52,7 @@ with it at any stage in the pipeline.
 
 - Channeled: Source can be a collection, a channel, a buffered reader (eg. result of (io/reader "file-name")) or a function returning any of these.
 
-- Collecting results as set of promises.
+- Collect results as set of promises.
 
 - Log every so many elements, and/or periodically.
 
@@ -70,7 +70,7 @@ would keep the core at 1oo% (threads = number of cores * (1 + blocking time /
 working time)).
 
 So we don't care which transforming function blocks at all, we just care about
-the avarage work/wait ratio over the duration of the job.
+the actual work/wait ratio at any moment.
 
 As long as there is a one on one relation between source data element and
 resulting output element (so no 'multiple' result) xfs can effectively be
@@ -85,8 +85,8 @@ done in stages.
 
 Regardless, even with branching the ratio of blocking vs waiting will very
 likely be stable over the run of the job, and thread count should be set
-appropriately to maximize use of cpu time. The hooks should help in timing and
-determining thread count.
+appropriately to maximize use of cpu time. The pipeline's task count can be
+dynamically adjusted.
 
 Use core.async's pipeline when results need to be ordered. This pipeline
 currentlly makes distinction between blocking and compute work only
@@ -114,14 +114,10 @@ Links:
 * Examples
 #+begin_src clojure
 ;; Minimal pipeline that returns a channel that closes after taking 10 values
-(let [{:keys [tasks]} (p/tasks 2) ;; thread count of 2
-      xfs [{:xf inc} {:xf inc}] ;; inc each element twice
-      source (wrapped/wrap-source (u/channeled (range 10)) xfs)] ;; bind source with xfs
-  (p/flow source tasks
-          {:queue? wrapped/queue?
-           :work   wrapped/thread}))
-;;=>
-(2 3 4 5 6 7 8 9 10 11) ;;in some unordered order :->
+(let [tasks (d/tasks 2) ;; thread count of 2
+      xfs [{:xf inc} {:xf inc}] ;; increment each element twice
+      source (default/wrapped (u/channeled (range 10)) xfs)] ;; bind source with xfs
+  (p/flow source tasks))
+;;=> (after extracting result)
+(2 3 4 5 6 7 8 9 10 11) ;;unordered
 #+end_src
-
-* TODO

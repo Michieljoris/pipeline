@@ -4,9 +4,6 @@
             [pipeline.stat :as stat]
             [pipeline.util :as u]))
 
-(def mx-bean (java.lang.management.ManagementFactory/getThreadMXBean))
-(def os-bean (java.lang.management.ManagementFactory/getOperatingSystemMXBean))
-
 (defn wrapped [source pipeline]
   (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))
         input (a/chan 1 (map-indexed #(hash-map :data %2
