@@ -236,11 +236,11 @@
           start-time   (stat/now)
           ;; _ (reset! wrapped/task-ratios [])
           ;; _ (reset! wrapped/cpu-time-a {:last-time 0 :collect []})
-          tasks (d/tasks 20)
+          tasks (d/tasks 10)
           _ (def tasks tasks)
           xfs [{:xf (fn [data]
-                      (Thread/sleep 100)
-                      (test/rand-work 200 0)
+                      (Thread/sleep 50)
+                      ;; (test/rand-work 200 100)
                       ;; (tap> {:done data})
                       ;; (Thread/sleep 1000)
                       ;; (/ 1 0)
@@ -251,20 +251,20 @@
                 :pre-xf (u/log-period tap>  "I'm alive!!", 5000)
                 :i 0
                 }
-               ;; {:xf inc
-               ;;  :i 1}
-               ;; {:xf (fn [data]
-               ;;        (Thread/sleep 500)
-               ;;        (test/rand-work 100 0)
-               ;;        ;; (tap> {:done data})
-               ;;        (Thread/sleep 1000)
-               ;;        ;; (/ 1 0)
+               {:xf inc
+                :i 1}
+               {:xf (fn [data]
+                      ;; (Thread/sleep 500)
+                      (test/rand-work 40 0)
+                      ;; (tap> {:done data})
+                      (Thread/sleep 50)
+                      ;; (/ 1 0)
 
-               ;;        ;; (tap> {:xf2 data} )
-               ;;        data
-               ;;        )
-               ;;  :i 2
-               ;;  }
+                      ;; (tap> {:xf2 data} )
+                      data
+                      )
+                :i 2
+                }
 
                ;; {:xf (fn [data]
                ;;        [(inc data) (inc data)]
@@ -274,18 +274,32 @@
                ;; {:xf inc}
                ;; {:xf inc}
                ]
-          source (i/wrapped (u/channeled (range 1000)) xfs)
+          source (i/wrapped (u/channeled (range 1000000)) xfs)
           out (i/out)
           max-cpu-load 0.95
-          ]
+          min-cpu-load 0.85]
       (reset! out-a out)
       (u/periodically (fn []
+                        (tap> {:throughput (stat/stats :xf-0)}))
+                      5000
+                      halt)
+      (u/periodically (fn []
                         (let [cpu-load (.getCpuLoad os-bean)]
-                          (when (> cpu-load max-cpu-load)
-                            (d/dec-task-count tasks)
-                            (tap> {:decreasing-task-count {:cpu-load cpu-load
-                                                           :new-task-count @d/task-count}})
-                            )
+                          ;;TODO: how about memory usage?
+                          (cond
+                            (< cpu-load min-cpu-load)
+                            (do
+                              (d/inc-task-count tasks)
+                              (tap> {:increasing-task-count {:cpu-load cpu-load
+                                                             :new-task-count @d/task-count}}))
+
+                            (> cpu-load max-cpu-load)
+                            (do
+                              (d/dec-task-count tasks)
+                              (tap> {:decreasing-task-count {:cpu-load cpu-load
+                                                             :new-task-count @d/task-count}}))
+                            :else nil)
+
                           (tap> (str "Load: " cpu-load))))
                       1000 halt)
       (tap> (->
@@ -298,12 +312,12 @@
              count
              ))
 
-      ;; (tap> {:stats {:xf-0 (stat/stats :xf-0)
-      ;;                :xf (stat/stats :xf)
-      ;;                :in-system (stat/stats :in-system)
-      ;;                :wait (stat/stats :wait)
-      ;;                }
-      ;;        :duration (/ (- (stat/now) start-time) 1000.0)})
+      (tap> {:stats {:xf-0 (stat/stats :xf-0)
+                     :xf (stat/stats :xf)
+                     :in-system (stat/stats :in-system)
+                     :wait (stat/stats :wait)
+                     }
+             :duration (/ (- (stat/now) start-time) 1000.0)})
 
       (a/close! halt)
       )
@@ -313,6 +327,7 @@
 
   (.getCpuLoad os-bean)
 
+  ;; Stop all
   (future
     (stop #(d/dec-task-count tasks))
     (a/close! @out-a)
@@ -320,13 +335,5 @@
 
   (future (tap> (d/inc-task-count tasks)))
   (future (tap> (d/dec-task-count tasks)))
-
-
-
-
-
-  (def halt (a/chan))
-  (stat/periodically #(tap> :hello) :one-second halt)
-  (a/close! halt)
 
   (read-csv "resources/test.csv"))

@@ -89,7 +89,7 @@ appropriately to maximize use of cpu time. The pipeline's task count can be
 dynamically adjusted.
 
 Use core.async's pipeline when results need to be ordered. This pipeline
-currentlly makes distinction between blocking and compute work only
+currently makes distinction between blocking and compute work only
 conceptually.
 
 * Credits
