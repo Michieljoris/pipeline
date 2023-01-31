@@ -37,8 +37,8 @@
        (not (instance? Throwable data))))
 
 (defn work
-  "Receives wrapped data as x, should call apply-xf on x and then done, and
-   return a channel with results."
+  "Receives wrapped data as x, should call apply-xf on x asynchronously and then
+   done, and return a channel with results."
   ([x done] (work apply-xf x done))
   ([apply-xf x done]
    (let [result (a/chan)]

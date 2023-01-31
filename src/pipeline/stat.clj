@@ -4,6 +4,7 @@
    [clj-time.coerce :as c]
    [com.stuartsierra.frequencies :as freq]
    [clojure.core.async :as a]
+   [pipeline.util :as u]
    [taoensso.timbre :as log]))
 
 (def stats-atom (atom nil))
@@ -51,15 +52,6 @@
 (defn get-duration-s [kw-or-number]
   (cond->> kw-or-number
     (keyword? kw-or-number) (get durations)))
-
-(defn periodically
-  "Executes f every period (in minutes) till halt channel is closed"
-  [f period halt]
-  (a/go-loop []
-    (let [[_ c] (a/alts! [(a/timeout (* (get-duration-s period) 1000)) halt])]
-      (when-not (= c halt)
-        (f)
-        (recur)))))
 
 (defn mark-period
   [max-periods]
@@ -115,7 +107,8 @@
   (reset! stats-atom nil)
   (let [max-periods (/ (* minutes 60) (get-duration-s default-period))
         halt (a/chan)]
-    (periodically (partial mark-period max-periods) default-period halt)
+    (u/periodically (partial mark-period max-periods)
+                    (* (get-duration-s default-period) 1000) halt)
     halt))
 
 (defn stats

@@ -11,8 +11,7 @@
    [taoensso.timbre :as log]
    [pipeline.impl.minimal :as m]
    [pipeline.impl.instrumented :as i]
-   [pipeline.impl.default :as d]
-   [pipeline.protocol :as prot])
+   [pipeline.impl.default :as d])
   )
 
 
@@ -185,6 +184,8 @@
         members (rest csv)]
     (map #(zipmap columns %) members) ))
 
+(def halt-c (atom nil))
+(def out-a (atom nil))
 
 (comment
 
@@ -230,16 +231,16 @@
   (try-future
 
    (time
-    (let [halt            (stat/init-stats 60)
+    (let [halt  (stat/init-stats 60)
+          _ (reset! halt-c halt)
           start-time   (stat/now)
           ;; _ (reset! wrapped/task-ratios [])
           ;; _ (reset! wrapped/cpu-time-a {:last-time 0 :collect []})
-          tasks (d/tasks 2)
+          tasks (d/tasks 20)
           _ (def tasks tasks)
           xfs [{:xf (fn [data]
                       (Thread/sleep 100)
-
-                      ;; (test/rand-work 200 0)
+                      (test/rand-work 200 0)
                       ;; (tap> {:done data})
                       ;; (Thread/sleep 1000)
                       ;; (/ 1 0)
@@ -247,7 +248,7 @@
                       ;; (tap> {:xf data} )
 
                       (inc data))
-                :log-count (u/log-count tap> "hello from xf1", 10)
+                :pre-xf (u/log-period tap>  "I'm alive!!", 5000)
                 :i 0
                 }
                ;; {:xf inc
@@ -256,12 +257,13 @@
                ;;        (Thread/sleep 500)
                ;;        (test/rand-work 100 0)
                ;;        ;; (tap> {:done data})
-               ;;        ;; (Thread/sleep 1000)
+               ;;        (Thread/sleep 1000)
                ;;        ;; (/ 1 0)
 
                ;;        ;; (tap> {:xf2 data} )
                ;;        data
                ;;        )
+               ;;  :i 2
                ;;  }
 
                ;; {:xf (fn [data]
@@ -272,35 +274,50 @@
                ;; {:xf inc}
                ;; {:xf inc}
                ]
-          source (d/wrapped (u/channeled (range 1)) xfs)
-          source' (a/chan 1 (map #(assoc % :queued (stat/now))))
-          out (a/chan 1 (map (fn [x]
-                               (stat/add-stat :in-system (- (stat/now) (:queued x))) x)))
+          source (i/wrapped (u/channeled (range 1000)) xfs)
+          out (i/out)
+          max-cpu-load 0.95
           ]
-      (a/pipe source source')
+      (reset! out-a out)
+      (u/periodically (fn []
+                        (let [cpu-load (.getCpuLoad os-bean)]
+                          (when (> cpu-load max-cpu-load)
+                            (d/dec-task-count tasks)
+                            (tap> {:decreasing-task-count {:cpu-load cpu-load
+                                                           :new-task-count @d/task-count}})
+                            )
+                          (tap> (str "Load: " cpu-load))))
+                      1000 halt)
       (tap> (->
-             (p/flow source' tasks
+             (p/flow source tasks
                      {:out out
-                      :queue? d/queue?
-                      :work   (partial d/work (wrap-apply-xf d/apply-xf))})
-             (extract-raw-results)
-             ;; :result
-             ;; count
+                      :work   (partial d/work
+                                       (partial i/apply-xf :i))})
+             extract-raw-results
+             :result
+             count
              ))
 
-      (tap> {:stats {:xf-0 (stat/stats :xf-0)
-                     ;; :xf-1 (stat/stats :xf-1)
-                     :in-system (stat/stats :in-system)
-                     :queued (stat/stats :queued)
-                     }
-             :duration (/ (- (stat/now) start-time) 1000.0)})
+      ;; (tap> {:stats {:xf-0 (stat/stats :xf-0)
+      ;;                :xf (stat/stats :xf)
+      ;;                :in-system (stat/stats :in-system)
+      ;;                :wait (stat/stats :wait)
+      ;;                }
+      ;;        :duration (/ (- (stat/now) start-time) 1000.0)})
 
       (a/close! halt)
       )
     )
    )
 
-  (future (stop #(d/dec-task-count tasks)))
+
+  (.getCpuLoad os-bean)
+
+  (future
+    (stop #(d/dec-task-count tasks))
+    (a/close! @out-a)
+    (a/close! @halt-c))
+
   (future (tap> (d/inc-task-count tasks)))
   (future (tap> (d/dec-task-count tasks)))
 

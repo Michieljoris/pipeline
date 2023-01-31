@@ -16,19 +16,19 @@
   ([x] (apply-xf hash x))
   ([pipe-id-fn x]
    (stat/add-stat :wait (- (stat/now) (or (:ts-result-queued x) (:ts-source-queued x))))
-   (let [{:keys [log-count log-period]
-          :or {log-count u/noop
-               log-period u/noop} :as pipe} (first (:pipeline x))]
-     (log-count)
-     (log-period)
-     (let [ts-before-apply-xf (stat/now)
-           result-channel (a/chan 1 (map #(assoc % :ts-result-queued (stat/now))))
-           c (d/apply-xf x)
-           duration (- (stat/now) ts-before-apply-xf)]
+   (let [{:keys [pre-xf post-xf]
+          :or {pre-xf  u/noop
+               post-xf u/noop} :as pipe} (first (:pipeline x))
+         ts-before-apply-xf (stat/now)
+         result-channel (a/chan 1 (map #(assoc % :ts-result-queued (stat/now))))
+         _ (pre-xf)
+         c (d/apply-xf x)
+         _ (post-xf)
+         duration (- (stat/now) ts-before-apply-xf)]
        (stat/add-stat (keyword (str "xf-" (pipe-id-fn pipe))) duration)
        (stat/add-stat (keyword (str "xf")) duration)
        (a/pipe c result-channel)
-       result-channel))))
+       result-channel)))
 
 (defn out []
   (a/chan 1 (map (fn [x]

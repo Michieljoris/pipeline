@@ -119,5 +119,5 @@ Links:
       source (default/wrapped (u/channeled (range 10)) xfs)] ;; bind source with xfs
   (p/flow source tasks))
 ;;=> (after extracting result)
-(2 3 4 5 6 7 8 9 10 11) ;;unordered
+(2 3 4 5 6 7 8 9 10 11) ;;in some unordered order :->
 #+end_src

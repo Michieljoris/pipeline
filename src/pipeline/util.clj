@@ -6,6 +6,15 @@
 
 (def noop (constantly nil))
 
+(defn periodically
+  "Executes f every period (in ms) till halt channel is closed"
+  [f ms halt]
+  (a/go-loop []
+    (let [[_ c] (a/alts! [(a/timeout ms) halt])]
+      (when-not (= c halt)
+        (f)
+        (recur)))))
+
 (defn log-count
   "Returns a function that will log msg every n invocations."
   [log msg n]
@@ -26,6 +35,7 @@
         t (atom start)
         cnt (atom 0)]
     (fn []
+      (swap! cnt inc)
       (let [new-t (System/currentTimeMillis)
             [old-t new-t]
             (swap-vals! t (fn [old-t]
@@ -33,8 +43,7 @@
                               new-t
                               old-t)))]
         (when (not= old-t new-t)
-          (log [msg :cnt @cnt :elapsed (ms->duration (- new-t start))])
-          (swap! cnt inc))))))
+          (log [msg :cnt @cnt :elapsed (ms->duration (- new-t start))]))))))
 
 (defn combine-xfs
   "Takes a collection of xf maps and combines and reduces the number of
