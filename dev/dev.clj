@@ -11,7 +11,8 @@
    [taoensso.timbre :as log]
    [pipeline.impl.minimal :as m]
    [pipeline.impl.instrumented :as i]
-   [pipeline.impl.default :as d])
+   [pipeline.impl.default :as d]
+   [pipeline.protocol :as prot])
   )
 
 
@@ -196,6 +197,37 @@
   (/ (.maxMemory run-time) 1000000.0)
 
   (try-future
+   (tap> (->> (p/flow (m/wrapped (u/channeled (range 1)) [{:xf inc}])
+                      (m/tasks 1)
+                      {:queue? m/queue?
+                       :work m/work})
+              extract-raw-results
+              ))
+
+   )
+
+  (try-future
+   (tap> (->> (p/flow (d/wrapped (u/channeled (range 1)) [{:xf inc}])
+                      (d/tasks 1)
+                      {:queue? d/queue?
+                       :work d/work}
+                      )
+              extract-raw-results
+              ))
+
+   )
+
+  (try-future
+   (tap> (->> (p/flow (i/wrapped (u/channeled (range 1)) [{:xf inc}])
+                      (d/tasks 1)
+                      {:work (partial d/work i/apply-xf)}
+                      )
+              extract-raw-results
+              ))
+
+   )
+
+  (try-future
 
    (time
     (let [halt            (stat/init-stats 60)
@@ -247,10 +279,10 @@
           ]
       (a/pipe source source')
       (tap> (->
-             (p/flow source' (:tasks tasks)
-                     { :out out
+             (p/flow source' tasks
+                     {:out out
                       :queue? d/queue?
-                      :work   (partial d/thread (wrap-apply-xf d/apply-xf))})
+                      :work   (partial d/work (wrap-apply-xf d/apply-xf))})
              (extract-raw-results)
              ;; :result
              ;; count

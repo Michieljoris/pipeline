@@ -1,6 +1,10 @@
 (ns pipeline.impl.minimal
+  "Minimal implementation of pipeline: constant task count, xf function receives
+   wrapped data and needs to update pipeline itself."
   (:require [clojure.core.async :as a]
-            [clojure.spec.alpha :as s]))
+            [clojure.spec.alpha :as s]
+            [clojure.spec.test.alpha :as stest]
+            [pipeline.specs :as specs]))
 
 (defn wrapped
   "Wraps and bundles source elements with the pipeline."
@@ -19,23 +23,31 @@
    pipeline (usually (rest pipeline))."
   [{:keys [pipeline] :as x} done]
   (a/thread
+    (tap> x)
     (let [x' ((-> pipeline first :xf) x)]
       (done)
       x')))
 
 (defn tasks [task-count]
-  (let [tasks (a/chan task-count)]
-    (dotimes [_ task-count] (a/offer! tasks :t))
-    tasks))
+  (let [c (a/chan task-count)]
+    (dotimes [_ task-count] (a/offer! c :t))
+    c))
 
-;;TODO: finish specs
-(s/def ::chan #(instance? clojure.core.async.impl.channels.ManyToManyChannel %))
-(s/def ::xf fn?)
-(s/def ::xf (s/keys :req-un [::xf]))
-(s/def ::pipeline (s/and (s/coll-of ::xf) seq))
-(s/def ::source ::chan)
+(s/fdef wrapped
+  :args (s/cat :source ::specs/source
+               :pipeline ::specs/pipeline))
+
+(s/fdef queue?
+  :args (s/cat :x ::specs/x))
 
 (s/fdef work
-  :args (s/cat  :x ::x
+  :args (s/cat  :x ::specs/x
                 :done fn?)
-  :ret ::x)
+  :ret ::specs/x)
+
+(s/fdef tasks
+  :args (s/cat :task-count number?)
+  :ret ::specs/chan)
+
+(stest/instrument
+ `[wrapped tasks])

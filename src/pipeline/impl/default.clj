@@ -1,7 +1,10 @@
 (ns pipeline.impl.default
   "Runs tasks in threads, when :mult flag is set to true on xf expects multiple
    results. Catches any errors and assigns them to :data."
-  (:require [clojure.core.async :as a]))
+  (:require [clojure.core.async :as a]
+            [clojure.spec.alpha :as s]
+            [clojure.spec.test.alpha :as stest]
+            [pipeline.specs :as specs]))
 
 (defn wrapped
   "Expects a channel as source, wraps elements in a map each bundled with
@@ -65,3 +68,34 @@
      (reset! task-count 0)
      (dotimes [_ initial-task-count] (inc-task-count tasks))
      tasks)))
+
+(s/fdef wrapped
+  :args (s/cat :source ::specs/source
+               :pipeline ::specs/pipeline))
+
+(s/fdef queue?
+  :args (s/cat :x ::specs/x :data ::specs/data))
+
+(s/fdef work
+  :args (s/alt
+         :arity-2  (s/cat :x ::specs/x
+                          :done fn?)
+         :arity-3  (s/cat :apply-xf (s/? ::specs/apply-xf)
+                          :x ::specs/x
+                          :done fn?))
+  :ret ::specs/x)
+
+(s/fdef inc-task-count
+  :args (s/cat :tasks ::specs/chan))
+
+(s/fdef dec-task-count
+  :args (s/cat :tasks ::specs/chan))
+
+(s/fdef tasks
+  :args (s/alt :arity-1 (s/cat :initial-task-count number?)
+               :arity-2 (s/cat :initial-task-count number?
+                               :max-task-count number?))
+  :ret ::specs/chan)
+
+(stest/instrument
+ `[wrapped tasks inc-task-count dec-task-count])

@@ -1,9 +1,9 @@
 (ns pipeline.core
-  (:require [clojure.core.async :as a]
-            [clojure.spec.alpha :as s]
+  (:require [clojure.spec.alpha :as s]
+            [clojure.core.async :as a]
             [clojure.spec.test.alpha :as stest]
             [pipeline.impl.default :as d]
-            [pipeline.util :as u]))
+            [pipeline.specs :as specs]))
 
 (defn flow
   "Flow source through pipeline using tasks to optionally supplied out. When
@@ -45,19 +45,22 @@
                    (recur inputs)))))))
      out)))
 
-(s/def ::chan #(instance? clojure.core.async.impl.channels.ManyToManyChannel %))
-(s/def ::close? boolean?)
-(s/def ::out ::chan)
+
+(s/def ::close? (s/nilable boolean?))
+(s/def ::out ::specs/chan)
 (s/def ::queue? fn?)
 (s/def ::work fn?)
-(s/def ::source ::chan)
-(s/def ::flow-opts (s/keys :opt-un [:close? ::out ::queue? ::work]))
+
+(s/def ::flow-opts (s/nilable (s/keys :opt-un [::close? ::out ::queue? ::work])))
 
 (s/fdef flow
-  :args (s/cat  :source ::chan
-                :tasks ::chan
-                :opts ::flow-opts)
-  :ret ::chan)
+  :args (s/alt
+         :arity-2 (s/cat  :source ::specs/chan
+                          :tasks ::specs/chan)
+         :arity-3 (s/cat  :source ::specs/chan
+                                :tasks ::specs/chan
+                                :opts ::flow-opts))
+  :ret ::specs/chan)
 
-;; (stest/instrument
-;;  `[flow])
+(stest/instrument
+ `[flow])
