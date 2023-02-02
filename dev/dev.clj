@@ -62,9 +62,28 @@
     )
 
   (.getCpuLoad os-bean)
+  (/ (.getTotalMemorySize os-bean) 1000000000.0)
+  (let [used-swap (- (/ (.getTotalSwapSpaceSize os-bean) 1000000000.0)
+                     (/ (.getFreeSwapSpaceSize os-bean) 1000000000.0))
+
+        free-mem (/ (.getFreeMemorySize os-bean) 1000000000.0)
+
+        ]
+    {:used-swap used-swap
+     :free-mem free-mem
+     :free-mem2 (- free-mem used-swap)}
+
+    )
+
+  (* (/ (.getFreeMemorySize os-bean) 1000000.0) 4)
+
 
   (.availableProcessors run-time)
 
+  (doseq [method (into [] (.getDeclaredMethods (.getClass mx-bean)))]
+    (tap> method)
+
+    )
   (doseq [method (into [] (.getDeclaredMethods (.getClass os-bean)))]
     (tap> method)
 
@@ -187,6 +206,9 @@
 (def halt-c (atom nil))
 (def out-a (atom nil))
 
+(def work-load (atom 60))
+(reset! work-load 10)
+
 (comment
 
   (ll-thread-count 40 0.16)
@@ -228,11 +250,57 @@
 
    )
 
+ (def low (atom nil))
+ (def high (atom nil))
+
+(defn delta [a]
+  (let [d (first @a)]
+    (swap! a (if (nil? d)
+               (constantly [1 0])
+               #(take 2 (cons (apply + %) %))))
+    (or d 0)))
+
+;; (bar low)
+;; @low
+
+
+ (defn foo [tasks min-cpu-load max-cpu-load]
+   (fn []
+     (let [cpu-load (.getCpuLoad os-bean)]
+       ;;TODO: how about memory usage?
+       (cond
+         (< cpu-load min-cpu-load)
+         (let [d (delta low)] ;;TODO no point in upping tasks when it's at maximum!!!
+           (dotimes [_ d] (d/inc-task-count tasks))
+           (reset! high nil)
+           ;; (d/inc-task-count tasks)
+           (tap> {:increasing-task-count {:cpu-load cpu-load
+                                          :min-cpu-load min-cpu-load
+                                          :delta d
+                                          :new-task-count @d/task-count}}))
+
+         (> cpu-load max-cpu-load)
+         (let [d (delta high)] ;;TODO no point in lowering tasks when it's at 0!!!!
+           (dotimes [_ d]  (d/dec-task-count tasks))
+           ;; (d/dec-task-count tasks)
+          (reset! low nil)
+           (tap> {:decreasing-task-count {:cpu-load cpu-load
+                                          :max-cpu-load max-cpu-load
+                                          :delta d
+                                          :new-task-count @d/task-count}}))
+         :else (do
+                 (reset! low nil)
+                 (reset! high nil)))
+
+       (tap> (str "Load: " cpu-load)))))
+
   (try-future
 
    (time
     (let [halt  (stat/init-stats 60)
           _ (reset! halt-c halt)
+          _ (reset! low nil)
+          _ (reset! high nil)
           start-time   (stat/now)
           ;; _ (reset! wrapped/task-ratios [])
           ;; _ (reset! wrapped/cpu-time-a {:last-time 0 :collect []})
@@ -255,7 +323,7 @@
                 :i 1}
                {:xf (fn [data]
                       ;; (Thread/sleep 500)
-                      (test/rand-work 40 0)
+                      (test/rand-work @work-load 0)
                       ;; (tap> {:done data})
                       (Thread/sleep 50)
                       ;; (/ 1 0)
@@ -276,32 +344,14 @@
                ]
           source (i/wrapped (u/channeled (range 1000000)) xfs)
           out (i/out)
-          max-cpu-load 0.95
-          min-cpu-load 0.85]
+          max-cpu-load 0.60
+          min-cpu-load 0.50]
       (reset! out-a out)
       (u/periodically (fn []
                         (tap> {:throughput (stat/stats :xf-0)}))
                       5000
                       halt)
-      (u/periodically (fn []
-                        (let [cpu-load (.getCpuLoad os-bean)]
-                          ;;TODO: how about memory usage?
-                          (cond
-                            (< cpu-load min-cpu-load)
-                            (do
-                              (d/inc-task-count tasks)
-                              (tap> {:increasing-task-count {:cpu-load cpu-load
-                                                             :new-task-count @d/task-count}}))
-
-                            (> cpu-load max-cpu-load)
-                            (do
-                              (d/dec-task-count tasks)
-                              (tap> {:decreasing-task-count {:cpu-load cpu-load
-                                                             :new-task-count @d/task-count}}))
-                            :else nil)
-
-                          (tap> (str "Load: " cpu-load))))
-                      1000 halt)
+      (u/periodically (foo tasks min-cpu-load max-cpu-load) 1000 halt)
       (tap> (->
              (p/flow source tasks
                      {:out out
@@ -337,3 +387,6 @@
   (future (tap> (d/dec-task-count tasks)))
 
   (read-csv "resources/test.csv"))
+
+
+(* (/ 19 22) 7616.67)
