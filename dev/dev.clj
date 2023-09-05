@@ -10,8 +10,138 @@
    [clojure.data.csv :as csv]
    [taoensso.timbre :as log]
    [pipeline.impl.minimal :as m]
+   [clj-http.client :as client]
+   [org.httpkit.client :as http]
    [pipeline.impl.instrumented :as i]
    [pipeline.impl.default :as d])
+  )
+
+(def url "http://localhost:20016")
+(def group-by-result-type
+  (comp (partial group-by (fn [{:keys [data pipeline] :as x}]
+                            (cond (instance? Throwable data) :error
+                                  (empty? pipeline)          :result
+                                  (nil? data)                :nil-result
+                                  :else                      :queue)))
+        #(sort-by :i %)))
+
+(defn extract-raw-results [out]
+  (-> out
+      u/as-promise
+      deref
+      group-by-result-type))
+
+(defn request [url options]
+  (let [result (a/chan)]
+    (http/get url options
+              (fn [{:keys [status headers body error] :as response}] ;; asynchronous response handling
+                (a/go
+                  (a/>! result {:status status :body body :error error}))
+                (if error
+                  (println "Failed, exception is " error)
+                  (do
+                    (tap> {:body body})
+                    (println "Async HTTP GET: " status)))))
+    (tap> {:done :with-call})
+    result))
+
+(defn apply-xf
+  "Actually calls the xf function on data and updates pipe to the next one.
+   Returns channel with (possilbe) multiple results. Catches any errors and
+   assigns them to the :data key."
+  [{:keys [data pipeline] :as x}]
+  (let [datas (try
+                (let [{:keys [xf mult async]} (first pipeline)
+                      result (xf data)]
+                  (if mult
+                    (if (seq result) result [nil])
+                    [result]))
+                (catch Throwable t [t]))
+        x' (assoc x :pipeline (rest pipeline))]
+    (a/to-chan! (map #(assoc x' :data %) datas))))
+
+(defn work
+  "Receives wrapped data as x, should call apply-xf on x asynchronously and then
+   done, and return a channel with results."
+  ([{:keys [data pipeline] :as x} done]
+   (let  [{:keys [xf async]} (first pipeline)]
+     (if async
+       (let [result (a/chan 1 (map #(merge x {:data %
+                                              :pipeline (rest pipeline)})))
+             cb (fn [res]
+                  (a/go (a/>! result res)
+                        (a/close! result)))]
+         (xf data cb)
+         (done)
+         result)
+       (work apply-xf x done))))
+  ([apply-xf x done]
+   (let [result (a/chan)]
+     (a/thread (a/pipe (apply-xf x) result) (done))
+     result)))
+
+
+(def options {:timeout 2000             ; ms
+              ;; :basic-auth ["user" "pass"]
+              ;; :query-params {:param "value" :param2 ["value1" "value2"]}
+              ;; :user-agent "User-Agent-string"
+              ;; :headers {"X-Header" "Value"}
+              :as :text
+              })
+
+(comment
+
+
+
+  (future
+
+    )
+  (let [result (a/chan)]
+    (http/get url options
+              (fn [{:keys [status headers body error]}] ;; asynchronous response handling
+                (a/go
+                  (a/>! result {:status status :body body :error error}))
+                (if error
+                  (println "Failed, exception is " error)
+                  (do
+                    (tap> {:body body})
+                    (println "Async HTTP GET: " status)))))
+
+    ;; (tap> {:done :with-call})
+    ;; (tap> {:result (a/<!! result)})
+    (def result result)
+    )
+
+ (a/go
+   (tap> (a/<! result)))
+                                        ; [1] may not always true, since DNS lookup maybe slow
+  (client/get )
+
+  (do
+    (client/request {:url url
+                     :method :get
+                     :async? true}
+                    ;; respond callback
+                    (fn [response] (println "response is:" response))
+                    ;; raise callback
+                    (fn [exception] (println "exception message is: " (.getMessage exception))))
+    :done
+    )
+
+ (future
+   (->> (p/flow (m/wrapped (u/channeled (range 5))
+                           [{:xf (fn [data cb]
+                                   (tap> {:data data :making :request})
+                                   (http/get url options cb))
+                             :async true}
+                            {:xf (fn [response]
+                                   (tap> {:response response})
+                                   (assoc response :xf2 :!!!!!!!!)
+                                   )}])
+                (d/tasks 1)
+                {:work work})
+        extract-raw-results
+        tap>))
   )
 
 

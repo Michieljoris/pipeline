@@ -7,6 +7,6 @@
 
 (s/def ::xf fn?)
 (s/def ::xf-map (s/keys :req-un [::xf]))
-(s/def ::pipeline (s/coll-of ::xf-map))
+(s/def ::pipeline (s/or :fn fn? :coll (s/coll-of ::xf-map)))
 (s/def ::data (s/nilable any?))
 (s/def ::x (s/keys :req-un [::pipeline ::data]))

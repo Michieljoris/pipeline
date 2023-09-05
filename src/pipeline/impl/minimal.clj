@@ -23,7 +23,6 @@
    pipeline (usually (rest pipeline))."
   [{:keys [pipeline] :as x} done]
   (a/thread
-    (tap> x)
     (let [x' ((-> pipeline first :xf) x)]
       (done)
       x')))
