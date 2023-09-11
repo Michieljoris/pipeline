@@ -16,7 +16,6 @@
    [pipeline.impl.default :as d])
   )
 
-(def url "http://localhost:20016")
 (def group-by-result-type
   (comp (partial group-by (fn [{:keys [data pipeline] :as x}]
                             (cond (instance? Throwable data) :error
@@ -30,20 +29,6 @@
       u/as-promise
       deref
       group-by-result-type))
-
-(defn request [url options]
-  (let [result (a/chan)]
-    (http/get url options
-              (fn [{:keys [status headers body error] :as response}] ;; asynchronous response handling
-                (a/go
-                  (a/>! result {:status status :body body :error error}))
-                (if error
-                  (println "Failed, exception is " error)
-                  (do
-                    (tap> {:body body})
-                    (println "Async HTTP GET: " status)))))
-    (tap> {:done :with-call})
-    result))
 
 (defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.
@@ -81,71 +66,21 @@
      result)))
 
 
-(def options {:timeout 2000             ; ms
-              ;; :basic-auth ["user" "pass"]
-              ;; :query-params {:param "value" :param2 ["value1" "value2"]}
-              ;; :user-agent "User-Agent-string"
-              ;; :headers {"X-Header" "Value"}
-              :as :text
-              })
+
+
 
 (comment
 
 
 
-  (future
 
-    )
-  (let [result (a/chan)]
-    (http/get url options
-              (fn [{:keys [status headers body error]}] ;; asynchronous response handling
-                (a/go
-                  (a/>! result {:status status :body body :error error}))
-                (if error
-                  (println "Failed, exception is " error)
-                  (do
-                    (tap> {:body body})
-                    (println "Async HTTP GET: " status)))))
 
-    ;; (tap> {:done :with-call})
-    ;; (tap> {:result (a/<!! result)})
-    (def result result)
-    )
 
- (a/go
-   (tap> (a/<! result)))
-                                        ; [1] may not always true, since DNS lookup maybe slow
-  (client/get )
 
-  (do
-    (client/request {:url url
-                     :method :get
-                     :async? true}
-                    ;; respond callback
-                    (fn [response] (println "response is:" response))
-                    ;; raise callback
-                    (fn [exception] (println "exception message is: " (.getMessage exception))))
-    :done
-    )
 
- (future
-   (->> (p/flow (m/wrapped (u/channeled (range 100))
-                           [{:xf (fn [data cb]
-                                   ;; (tap> {:data data :making :request})
-                                   (http/get url options cb))
-                             :async true}
-                            ;; {:xf (fn [response]
-                            ;;        (tap> {:response response})
-                            ;;        (assoc response :xf2 :!!!!!!!!)
-                            ;;        )}
-                            ])
-                (d/tasks 300)
-                {:work work})
-        extract-raw-results
-        (take 3)
-        tap>))
+
+
   )
-
 
 ;; DONE update tests
 ;; TODO finish specs
@@ -233,7 +168,7 @@
   (-> out
       u/as-promise
       deref
-      ;; group-by-result-type
+      group-by-result-type
       ))
 
 (defn extract-results [out]
@@ -531,7 +466,7 @@
         numbered (a/chan 1 (map-indexed (fn [i x] (assoc x :i i))))]
     (a/pipe input numbered)))
  (future
-   (tap> {:result (->> (d/tasks 2)
+   (tap> {:result (->> (d/tasks 1)
                        (p/flow (wrap-and-number
                                  (u/channeled [[:e1]
                                                [:e2]
@@ -543,9 +478,9 @@
                                  [{:xf (fn [data]
                                          (tap> {:xf1 data})
                                          ;; (Thread/sleep 200)
-                                         ;; (Thread/sleep 1000)
-                                         ;; (Thread/sleep 100)
                                          (Thread/sleep 1000)
+                                         ;; (Thread/sleep 100)
+                                         ;; (Thread/sleep 1000)
                                          (conj data :xf1)
                                          )}
                                   {:xf (fn [data]
@@ -564,7 +499,7 @@
                                   {:xf (fn [data]
                                          (tap> {:xf5 data})
 
-                                         (Thread/sleep 1000)
+                                         ;; (Thread/sleep 1000)
                                          (conj data :xf5)
                                          )}
                                   ]))

@@ -1,14 +1,12 @@
 (ns core-test
   (:require
    [clojure.core.async :as a]
+   [clojure.test :refer :all]
    [pipeline.core :as p]
-   [test.util :refer [=tap wrap-apply-xf extract-results
-                      extract-raw-results]]
    [pipeline.impl.default :as d]
    [pipeline.impl.minimal :as m]
-   [pipeline.impl.instrumented :as i]
    [pipeline.util :as u]
-   [clojure.test :refer :all]))
+   [test.util :refer [extract-raw-results extract-results]]))
 
 (defn wrap-and-number [source pipeline]
   (let [input (d/wrapped source pipeline)

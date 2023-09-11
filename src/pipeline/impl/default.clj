@@ -45,10 +45,12 @@
        (let [result (a/chan 1 (map #(merge x {:data %
                                               :pipeline (rest pipeline)})))
              ;;TODO: somehow use apply-xf here? So mult and try-catch kick in?
-             cb #(a/go (a/>! result %)
-                       (a/close! result))]
+             cb #(do
+                   (a/go (a/>! result %)
+                         (a/close! result))
+                   (done))]
          (xf data cb)
-         (done)
+
          result)
        (work apply-xf x done))))
   ([apply-xf x done]

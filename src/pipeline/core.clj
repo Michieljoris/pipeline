@@ -32,18 +32,17 @@
      (a/go-loop [inputs (list source)]
        (when (seq inputs)
          (a/<! tasks) ;;wait for task to be available
-         (let [[x input] (a/alts! inputs :priority true)
-               inputs' (if (nil? x)
-                        (do (check-out)
-                            (a/>! tasks :t)
-                            (remove #(= input %) inputs))
-                        (if (queue? x)
-                          (do (check-in)
-                              (conj inputs (work x #(a/>!! tasks :t))))
-                          (do (a/>! tasks :t)
-                              (a/>! out x)
-                              inputs)))]
-           (recur inputs'))))
+         (let [[x input] (a/alts! inputs :priority true)] ;;move-things along using priority
+           (recur (if (nil? x)
+                    (do (check-out)
+                        (a/>! tasks :t)
+                        (remove #(= input %) inputs))
+                    (if (queue? x)
+                      (do (check-in)
+                          (conj inputs (work x #(a/>!! tasks :t))))
+                      (do (a/>! tasks :t)
+                          (a/>! out x)
+                          inputs)))))))
      out)))
 
 (s/def ::close? (s/nilable boolean?))
