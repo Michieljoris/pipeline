@@ -39,7 +39,18 @@
 (defn work
   "Receives wrapped data as x, should call apply-xf on x asynchronously and then
    done, and return a channel with results."
-  ([x done] (work apply-xf x done))
+  ([{:keys [data pipeline] :as x} done]
+   (let  [{:keys [xf async]} (first pipeline)]
+     (if async
+       (let [result (a/chan 1 (map #(merge x {:data %
+                                              :pipeline (rest pipeline)})))
+             ;;TODO: somehow use apply-xf here? So mult and try-catch kick in?
+             cb #(a/go (a/>! result %)
+                       (a/close! result))]
+         (xf data cb)
+         (done)
+         result)
+       (work apply-xf x done))))
   ([apply-xf x done]
    (let [result (a/chan)]
      (a/thread (a/pipe (apply-xf x) result) (done))

@@ -212,4 +212,22 @@
                           {:work   (partial d/work apply-xf)})
                   extract-results
                   :result
-                  (sort-by first)))))))
+                  (sort-by first))))))
+
+  (testing "Async xf"
+    (is (= (->>
+            (d/tasks 1)
+            (p/flow (m/wrapped (u/channeled (map vector (range 3)))
+                               [{:xf    (fn [data cb]
+                                          (cb (conj data :xf1)))
+                                 :async true}
+                                {:xf #(conj % :xf2)}]))
+            extract-raw-results
+            :result
+            (sort-by (comp first :data)))
+           [{:pipeline ()
+             :data     [0 :xf1 :xf2]}
+            {:pipeline ()
+             :data     [1 :xf1 :xf2]}
+            {:pipeline ()
+             :data     [2 :xf1 :xf2]}]))))

@@ -129,18 +129,20 @@
     )
 
  (future
-   (->> (p/flow (m/wrapped (u/channeled (range 5))
+   (->> (p/flow (m/wrapped (u/channeled (range 100))
                            [{:xf (fn [data cb]
-                                   (tap> {:data data :making :request})
+                                   ;; (tap> {:data data :making :request})
                                    (http/get url options cb))
                              :async true}
-                            {:xf (fn [response]
-                                   (tap> {:response response})
-                                   (assoc response :xf2 :!!!!!!!!)
-                                   )}])
-                (d/tasks 1)
+                            ;; {:xf (fn [response]
+                            ;;        (tap> {:response response})
+                            ;;        (assoc response :xf2 :!!!!!!!!)
+                            ;;        )}
+                            ])
+                (d/tasks 300)
                 {:work work})
         extract-raw-results
+        (take 3)
         tap>))
   )
 
