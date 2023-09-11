@@ -233,7 +233,8 @@
   (-> out
       u/as-promise
       deref
-      group-by-result-type))
+      ;; group-by-result-type
+      ))
 
 (defn extract-results [out]
 (reduce-kv (fn [acc k v]
@@ -522,3 +523,51 @@
 
 
 (* (/ 19 22) 7616.67)
+
+
+(comment
+  (defn wrap-and-number [source pipeline]
+  (let [input (d/wrapped source pipeline)
+        numbered (a/chan 1 (map-indexed (fn [i x] (assoc x :i i))))]
+    (a/pipe input numbered)))
+ (future
+   (tap> {:result (->> (d/tasks 2)
+                       (p/flow (wrap-and-number
+                                 (u/channeled [[:e1]
+                                               [:e2]
+                                               [:e3]
+                                               [:e4]
+                                               [:e5]
+                                               [:e6]
+                                               ])
+                                 [{:xf (fn [data]
+                                         (tap> {:xf1 data})
+                                         ;; (Thread/sleep 200)
+                                         ;; (Thread/sleep 1000)
+                                         ;; (Thread/sleep 100)
+                                         (Thread/sleep 1000)
+                                         (conj data :xf1)
+                                         )}
+                                  {:xf (fn [data]
+                                         (tap> {:xf2 data})
+                                         ;; (Thread/sleep 200)
+                                         (conj data :xf2)
+                                         )}
+                                  {:xf (fn [data]
+                                         (tap> {:xf3 data})
+                                         (conj data :xf3)
+                                         )}
+                                  {:xf (fn [data]
+                                         (tap> {:xf4 data})
+                                         (conj data :xf4)
+                                         )}
+                                  {:xf (fn [data]
+                                         (tap> {:xf5 data})
+
+                                         (Thread/sleep 1000)
+                                         (conj data :xf5)
+                                         )}
+                                  ]))
+                       extract-raw-results)}))
+
+  )

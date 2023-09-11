@@ -29,22 +29,22 @@
 
      (check-in)
 
-     (a/go-loop [inputs #{source}]
+     (a/go-loop [inputs (list source)]
        (when (seq inputs)
-         (let [[x input] (a/alts! (vec inputs))]
-           (if (nil? x)
-             (do
-               (check-out)
-               (recur (disj inputs input))) ;;end of input
-             (if (queue? x)
-               (do
-                 (check-in)
-                 (a/<! tasks) ;;wait for task to be available
-                 (recur (conj inputs (work x #(a/>!! tasks :t)))))
-               (do (a/>! out x)
-                   (recur inputs)))))))
+         (a/<! tasks) ;;wait for task to be available
+         (let [[x input] (a/alts! inputs :priority true)
+               inputs' (if (nil? x)
+                        (do (check-out)
+                            (a/>! tasks :t)
+                            (remove #(= input %) inputs))
+                        (if (queue? x)
+                          (do (check-in)
+                              (conj inputs (work x #(a/>!! tasks :t))))
+                          (do (a/>! tasks :t)
+                              (a/>! out x)
+                              inputs)))]
+           (recur inputs'))))
      out)))
-
 
 (s/def ::close? (s/nilable boolean?))
 (s/def ::out ::specs/chan)

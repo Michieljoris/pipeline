@@ -15,7 +15,6 @@
         numbered (a/chan 1 (map-indexed (fn [i x] (assoc x :i i))))]
     (a/pipe input numbered)))
 
-
 (deftest flow-test
   (testing "Simple pipeline"
     (is (= (->> (d/tasks 1)
