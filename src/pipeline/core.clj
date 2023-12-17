@@ -22,6 +22,7 @@
   ([source tasks {:keys [out close? queue? work]
                   :or   {close? true     out  (a/chan)
                          queue? d/queue? work d/work}}]
+   (tap> :flow)
    (let [monitor (atom 0)
          check-in #(swap! monitor inc)
          check-out #(when (and (zero? (swap! monitor dec)) close?)
@@ -29,7 +30,8 @@
 
      (check-in)
 
-     (a/go-loop [inputs (list source)]
+     (a/go-loop [inputs (cond-> source
+                          (not (sequential? source)) list)]
        (when (seq inputs)
          (a/<! tasks) ;;wait for task to be available
          (let [[x input] (a/alts! inputs :priority true)] ;;move-things along using priority
@@ -54,11 +56,11 @@
 
 (s/fdef flow
   :args (s/alt
-         :arity-2 (s/cat  :source ::specs/chan
+         :arity-2 (s/cat  :source (s/or :chan ::specs/chan :chans (s/coll-of ::specs/chan))
                           :tasks ::specs/chan)
-         :arity-3 (s/cat  :source ::specs/chan
-                                :tasks ::specs/chan
-                                :opts ::flow-opts))
+         :arity-3 (s/cat  :source (s/or :chan ::specs/chan :chans (s/coll-of ::specs/chan))
+                          :tasks ::specs/chan
+                          :opts ::flow-opts))
   :ret ::specs/chan)
 
 (stest/instrument

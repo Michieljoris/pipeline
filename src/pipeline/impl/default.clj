@@ -15,6 +15,11 @@
   (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))]
     (a/pipe source (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %)))))))
 
+(defn process-mult [mult result]
+  (if mult
+    (if (seq result) result [nil])
+    [result]))
+
 (defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.
    Returns channel with (possilbe) multiple results. Catches any errors and
@@ -23,12 +28,10 @@
   (let [datas (try
                 (let [{:keys [xf mult]} (first pipeline)
                       result (xf data)]
-                  (if mult
-                    (if (seq result) result [nil])
-                    [result]))
-                (catch Throwable t [t]))
-        x' (assoc x :pipeline (rest pipeline))]
-    (a/to-chan! (map #(assoc x' :data %) datas))))
+                  (process-mult mult result))
+                (catch Throwable t [t]))]
+    (a/to-chan! (map #(merge x {:data %
+                                :pipeline (rest pipeline)}) datas))))
 
 (defn queue?
   "Decide on queueing for further processing. "
@@ -36,22 +39,31 @@
   (and (seq pipeline) (some? data)
        (not (instance? Throwable data))))
 
+(defn work-async
+   "TODO"
+  [{:keys [data pipeline] :as x} done]
+  (let [{:keys [xf mult]} (first pipeline)
+        result-chan (a/chan 1)
+        wrap-datas (fn [datas] (map #(merge x {:data     %
+                                               :pipeline (rest pipeline)})
+                                    datas))
+        cb (fn [result]
+             (let [datas (process-mult mult result)]
+               (a/onto-chan! result-chan (wrap-datas datas)))
+             (done))]
+    (try
+      (xf data cb)
+      result-chan
+      (catch Throwable t
+        (a/onto-chan! result-chan (wrap-datas [t]))))))
+
 (defn work
   "Receives wrapped data as x, should call apply-xf on x asynchronously and then
    done, and return a channel with results."
-  ([{:keys [data pipeline] :as x} done]
-   (let  [{:keys [xf async]} (first pipeline)]
+  ([{:keys [pipeline] :as x} done]
+   (let  [{:keys [async]} (first pipeline)]
      (if async
-       (let [result (a/chan 1 (map #(merge x {:data %
-                                              :pipeline (rest pipeline)})))
-             ;;TODO: somehow use apply-xf here? So mult and try-catch kick in?
-             cb #(do
-                   (a/go (a/>! result %)
-                         (a/close! result))
-                   (done))]
-         (xf data cb)
-
-         result)
+       (work-async x done)
        (work apply-xf x done))))
   ([apply-xf x done]
    (let [result (a/chan)]
