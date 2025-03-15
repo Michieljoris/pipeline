@@ -26,9 +26,8 @@
    assigns them to the :data key."
   [{:keys [data pipeline] :as x}]
   (let [datas (try
-                (let [{:keys [xf mult]} (first pipeline)
-                      result (xf data)]
-                  (process-mult mult result))
+                (let [{:keys [xf mult]} (first pipeline)]
+                  (process-mult mult (xf data)))
                 (catch Throwable t [t]))]
     (a/to-chan! (map #(merge x {:data %
                                 :pipeline (rest pipeline)}) datas))))

@@ -22,7 +22,6 @@
   ([source tasks {:keys [out close? queue? work]
                   :or   {close? true     out  (a/chan)
                          queue? d/queue? work d/work}}]
-   (tap> :flow)
    (let [monitor (atom 0)
          check-in #(swap! monitor inc)
          check-out #(when (and (zero? (swap! monitor dec)) close?)
