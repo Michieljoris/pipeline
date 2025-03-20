@@ -19,10 +19,13 @@
 
 (def group-by-result-type
   (comp (partial group-by (fn [{:keys [data pipeline] :as x}]
-                            (cond (instance? Throwable data) :error
-                                  (empty? pipeline)          :result
-                                  (nil? data)                :nil-result
-                                  :else                      :queue)))
+                            (if (instance? Throwable data)
+                              :error
+                              (if (empty? pipeline)
+                                :result
+                                (if (nil? data)
+                                  :nil-result
+                                  :queue)))))
         #(sort-by :i %)))
 
 (defn extract-raw-results [out]
