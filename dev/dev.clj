@@ -495,7 +495,8 @@
    (a/go-loop [inputs (cond-> source
                         (not (sequential? source)) vector)] ;;[source xf1-output xf2-output etc], where each vomit x's.
      (if (seq inputs)
-       (let [[x input] (a/alts! inputs :priority true)] ;;move-things along using priority
+       (let [[x input] (a/alts! inputs ;; :priority true
+                                )] ;;move-things along using priority
          (recur (if (nil? x) ;; input has been closed, it's been exhausted
                   (remove #(= input %) inputs)
                   (if (queue? x)
@@ -517,36 +518,65 @@
     (a/to-chan! (map #(merge x {:data %
                                 :pipeline (rest pipeline)}) datas))))
 
+
+
 (defn work-thread
   [id chan]
-  (let [close (a/chan)]
+  (let [close (a/chan)
+        stat (atom {:wait 0
+                    :n 0})
+        ]
     (a/thread
       (tap> {id "started-work"})
-      (loop []
-        (let [[x _] (a/alts!! [chan close])]
-          (when-let [[f output] x]
-            (a/pipe (f) output)
-            (recur))))
-      (tap> {id "work done"}))
+      (let [start (stat/now)]
+        (loop []
+          (let [wait-start (stat/now)
+                [x _]      (a/alts!! [chan close])
+                wait-end (stat/now)]
+            (swap! stat update :wait  + (- wait-end wait-start))
+            (when-let [[x output] x]
+              (swap! stat update :n inc)
+              (a/pipe (apply-xf x) output)
+              (recur))))
+        (let [end      (stat/now)
+              duration (- end start)
+              waiting  (:wait @stat)
+              ]
+          (tap> {id {:idle-procent (int (* 100.0 (/ waiting duration)))
+                     :duration duration
+                     :stat         @stat
+                     }
+                 }))))
     #(a/close! close)))
 
+;; (defn work-thread
+;;   [id chan]
+;;   (let [close (a/chan)]
+;;     (a/thread
+;;       (tap> {id "started-work"})
+;;       (loop []
+;;         (let [[x _] (a/alts!! [chan close])]
+;;           (when-let [[x output] x]
+;;             (a/pipe (apply-xf x) output)
+;;             (recur))))
+;;       (tap> {id "work done"}))
+;;     #(a/close! close)))
+
 (defn next-output
-  [apply-xf {:keys [pipeline] :as x}]
+  [{:keys [pipeline] :as x}]
   (let [{:keys [pool]} (first pipeline)
         output (a/chan)]
-    (a/go (a/>! pool [#(apply-xf x) output]))
+    (a/go (a/>! pool [x output]))
     output))
 
 (defn work
   "Receives wrapped data as x, should call apply-xf on x asynchronously and then
    done, and return a channel with results."
-  ([x]
-   (work apply-xf x))
-  ([apply-xf {:keys [pipeline] :as x}]
-   (let [pipeline (first pipeline)]
-     (if (sequential? pipeline)
-       (a/merge (map #(next-output apply-xf (assoc x :pipeline %)) pipeline))
-       (next-output apply-xf x)))))
+  [{:keys [pipeline] :as x}]
+   (let [xf-map (first pipeline)]
+     (if (sequential? xf-map)
+       (a/merge (map #(next-output (assoc x :pipeline %)) xf-map))
+       (next-output x))))
 
 (comment
   (defn wrap-and-number [source pipeline]
@@ -555,7 +585,7 @@
       (a/pipe input numbered)))
 
  (let [{cpu-chan :chan} (threadpool :cpu 1)
-      {io-chan :chan} (threadpool :io 1)]
+      {io-chan :chan} (threadpool :io 2)]
    (future
      (tap> (->> (flow (wrap-and-number (u/channeled [{:e 1}
                                                      {:e 2}
@@ -573,42 +603,45 @@
                                                ;; (if (= data [:e2])
                                                ;;   [[:a1] [:a2]]
                                                ;   (conj data :xf1))
-                                                 (assoc data :xf1 true)
+                                                 (when (not= data {:e 1})
+                                                   (assoc data :xf1 true))
                                                  ;; [data data]
                                                  
                                                  )
                                          ;; :mult true
                                          :pool io-chan}
-                                        [[{:xf   (fn [data]
+                                        {:xf   (fn [data]
                                                    (tap> {:xf2 data})
-                                                   ;; (Thread/sleep 200)
+                                                    ;; (Thread/sleep 100)
                                                    ;; (when (= data {:e 2 :xf1 true})
                                                    ;;   (throw (ex-info "Error" {:data data}))
                                                    ;;   )
                                                    (assoc data :xf2-a true)
                                                    )
                                            ;; :mult true
-                                           :pool io-chan}]
-                                         [{:xf   (fn [data]
-                                                   (tap> {:xf2 data})
-                                                   ;; (Thread/sleep 200)
-                                                   ;; (when (= data {:e 2 :xf1 true})
-                                                   ;;   (throw (ex-info "Error" {:data data}))
-                                                   ;;   )
-                                                   (assoc data :xf2-b true)
-                                                   )
-                                           ;; :mult true
-                                           :pool cpu-chan}
-                                          {:xf (fn [{:keys [push] :as data}]
-                                                 (tap> {:xf3 data})
-                                                 (if push
-                                                   (do
-                                                     (tap> {:PUSHED data})
-                                                     :pushed
-                                                     )
-                                                   (assoc data :xf3 :processed))
-                                                 )
-                                           :pool cpu-chan}]]
+                                           :pool io-chan}
+                                         ;; [{:xf   (fn [data]
+                                         ;;           (tap> {:xf2 data})
+                                         ;;           ;; (Thread/sleep 200)
+                                         ;;           ;; (when (= data {:e 2 :xf1 true})
+                                         ;;           ;;   (throw (ex-info "Error" {:data data}))
+                                         ;;           ;;   )
+                                         ;;           (assoc data :xf2-b true)
+                                         ;;           )
+                                         ;;   ;; :mult true
+                                         ;;   :pool cpu-chan}
+                                         ;;  {:xf (fn [{:keys [push] :as data}]
+                                         ;;         (Thread/sleep 3)
+                                         ;;         (tap> {:xf3 data})
+                                         ;;         (if push
+                                         ;;           (do
+                                         ;;             (tap> {:PUSHED data})
+                                         ;;             :pushed
+                                         ;;             )
+                                         ;;           (assoc data :xf3 :processed))
+                                         ;;         )
+                                         ;;   :pool cpu-chan}]
+
                                         ;; {:xf (fn [data]
                                         ;;        (tap> {:xf4 data})
                                         ;;        (conj data :xf4)
