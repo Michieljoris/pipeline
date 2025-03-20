@@ -7,41 +7,39 @@
    )
   )
 
-(defn create
-  "Expects a channel as source, wraps elements in a map each bundled with
-   pipeline, when pipeline is a function it'll be called on every source element
-   and should return a pipeline (list of maps each with a transforming function
-   under the :xf key)."
-  [source pipeline]
-  (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))]
-    (a/pipe source (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %)))))))
+;; (defn create
+;;   "Expects a channel as source, wraps elements in a map each bundled with
+;;    pipeline, when pipeline is a function it'll be called on every source element
+;;    and should return a pipeline (list of maps each with a transforming function
+;;    under the :xf key)."
+;;   [source pipeline]
+;;   (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))]
+;;     (a/pipe source (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %)))))))
 
 (defn create2
-  "Expects a channel as source, wraps elements in a map each bundled with
-   pipeline, when pipeline is a function it'll be called on every source element
-   and should return a pipeline (list of maps each with a transforming function
-   under the :xf key)."
-  [source pipeline]
-  (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))]
-    (a/pipe source (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %)))))))
+  [source ops]
+  (let [grouped (group-by :in ops)]
+    (a/pipe source (a/chan 1 (map #(hash-map :data %
+                                             :op (get grouped nil)
+                                             :ops (dissoc grouped nil)))))))
 
-(defn apply-xf
+(defn exec-op
   "Actually calls the xf function on data and updates pipe to the next one.
    Returns channel with (possilbe) multiple, splllt results. Catches any errors
    and assigns them to the :data key."
-  [{:keys [data]
-    [{:keys [xf spill]} & rest-of-pipeline] :pipeline
-    :as x}]
-  (let [result (try (xf data) (catch Throwable t t))
+  [{:keys [data ops]
+    {:keys [f spill out]} :op :as x}]
+   ;; (tap> {:exec-op x})
+  (let [result (try (f data) (catch Throwable t t))
         spillable? (coll? result)
-        next-x (merge x {:data     result
-                         :pipeline rest-of-pipeline
-                         :done     (or (instance? Throwable result)
-                                       (empty? rest-of-pipeline)
-                                       (nil? result)
-                                       (and spill spillable? (empty? result)))})]
+        next-x (merge x {:data result
+                         :op   (get ops out)
+                         :done (or (instance? Throwable result)
+                                   (nil? out)
+                                   (nil? result)
+                                   (and spill spillable? (empty? result)))})]
     (a/to-chan! (if (:done next-x)
-                  [(assoc next-x :data nil)]
+                  [next-x]
                   (if (and spill spillable?)
                     (map #(assoc next-x :data %) (:data next-x))
                     [next-x])))))
@@ -54,26 +52,25 @@
       (loop []
         (let [[x _] (a/alts!! [chan close])]
           (when-let [[x output] x]
-            (a/pipe (apply-xf x) output)
+            (a/pipe (exec-op x) output)
             (recur))))
       (tap> {id "work done"}))
     #(a/close! close)))
 
 (defn next-output
-  [{:keys [pipeline] :as x}]
-  (let [{:keys [pool]} (first pipeline)
+  [{:keys [op] :as x}]
+  (let [{:keys [pool]} op
         output (a/chan)]
     (a/go (a/>! pool [x output]))
     output))
 
 (defn work
-  "Receives wrapped data as x, should call apply-xf on x asynchronously and return
+   "Receives wrapped data as x, should call exec-op on x asynchronously and return
    a channel with results."
-  [{:keys [pipeline] :as x}]
-   (let [xf-map (first pipeline)]
-     (if (sequential? xf-map)
-       (a/merge (map #(next-output (assoc x :pipeline %)) xf-map))
-       (next-output x))))
+  [{:keys [op] :as x}]
+  (if (sequential? op)
+    (a/merge (map #(next-output (assoc x :op %)) op))
+    (next-output x)))
 
 (defn flow
   ([source] (flow source nil))
@@ -83,6 +80,7 @@
                         (not (sequential? source)) vector)] ;;[source xf1-output xf2-output etc], where each vomit x's.
      (if (seq inputs)
        (let [[x input] (a/alts! inputs :priority true)] ;;move-things along using priority
+          ;; (tap> {:flow x})
          (recur (if (nil? x) ;; input has been closed, it's been exhausted
                   (remove #(= input %) inputs)
                   (if-not (:done x)
@@ -102,119 +100,89 @@
         #(sort-by :i %)))
 
 (defn extract-raw-results [out]
-  {:raw-result (-> out
+  {:raw-result (->> out
                    u/as-promise
                    deref
-                   ;; group-by-result-type
+                   ; group-by-result-type
+                   (map :data)
                    )})
 
 
-  (defn wrap-and-number [source pipeline]
-    (let [input (create source pipeline)
+  (defn wrap-and-number [source ops]
+    (let [input (create2 source ops)
           numbered (a/chan 1 (map-indexed (fn [i x] (assoc x :index i))))]
       (a/pipe input numbered)))
 
 (declare threadpool)
 
 (let [{cpu-chan :chan} (threadpool :cpu 1)
-      {io-chan :chan}  (threadpool :io 1)]
-    (future
-      (tap> (->> (flow (create2 (u/channeled [{:e 1}
-                                        ; {:e 2}
-                                              ;; {:e 3}
-                                              ;; [:e4]
-                                              ;; [:e5]
-                                              ;; [:e6]
-                                              ])
-
-
-                                [{:xf   (fn [data]
-                                          (tap> {:xf0 data})
-                                          ;; (Thread/sleep 200)
-                                          ;; (when (= data {:e 1})
-                                          ;;   (throw (ex-info "Error" {:data data})))
-                                          (assoc data :xf0 true)
-                                          )
-                                  ;; :mult true
-                                  :out  :a
-                                  :pool io-chan}
-                                 {:xf (fn [data]
-                                        (tap> {:xf1 data})
-                                        ;; (Thread/sleep 100)
-                                        ; (Thread/sleep 1000)
-                                        ;; (Thread/sleep 100)
-                                        ;; (Thread/sleep 1000)
-                                        ;; (if (= data [:e2])
-                                        ;;   [[:a1] [:a2]]
+      {io-chan :chan}  (threadpool :io 1)
+      ops [;; {:xf   (fn [data]
+           ;;          (tap> {:xf0 data})
+           ;;          ;; (Thread/sleep 200)
+           ;;          ;; (when (= data {:e 1})
+           ;;          ;;   (throw (ex-info "Error" {:data data})))
+           ;;          (assoc data :xf0 true)
+           ;;          )
+           ;;  :out  :a
+           ;;  :pool io-chan}
+           {:f (fn [data]
+                  (tap> {:xf1 data})
+                  ;; (Thread/sleep 100)
+                  ;; (if (= data [:e2])
+                  ;;   [[:a1] [:a2]]
                                         ;   (conj data :xf1))
-                                        (map #(assoc data :xf1 %) (range 3))
-                                        ;; [data data]
-                                        ;; []
+                  (map #(assoc data :xf1 %) (range 3))
+                  ;; [data data]
+                  ;; []
 
-                                        )
-                                  :in    :a ;;
-                                  :any-in  [:a :b]
-                                  :every-in [:a :b]
-                                  ;;; only ever one return value from a function!!!
-                                  :out   :b
-                                  ;; but we can 'spill' this result, if it's spillable, a collection
-                                  :spill true
-
-                                  :mult  true
-                                  :tuple true
-                                  :pool  io-chan}
-                                 {:xf   (fn [data]
-                                          (tap> {:xf2 data})
-                                          ;; (Thread/sleep 200)
-                                          ;; (when (= data {:e 2 :xf1 true})
-                                          ;;   (throw (ex-info "Error" {:data data}))
-                                          ;;   )
-                                          (assoc data :xf2 true)
-                                          )
-                                  ;; :mult true
-                                  :in   :b
-                                  :pool io-chan}]
-
-                                        ;; [{:xf   (fn [data]
-                                        ;;           (tap> {:xf2 data})
-                                        ;;           ;; (Thread/sleep 200)
-                                        ;;           ;; (when (= data {:e 2 :xf1 true})
-                                        ;;           ;;   (throw (ex-info "Error" {:data data}))
-                                        ;;           ;;   )
-                                        ;;           (assoc data :xf2-b true)
-                                        ;;           )
-                                        ;;   ;; :mult true
-                                        ;;   :pool cpu-chan}
-                                        ;;  {:xf (fn [{:keys [push] :as data}]
-                                        ;;         (Thread/sleep 3)
-                                        ;;         (tap> {:xf3 data})
-                                        ;;         (if push
-                                        ;;           (do
-                                        ;;             (tap> {:PUSHED data})
-                                        ;;             :pushed
-                                        ;;             )
-                                        ;;           (assoc data :xf3 :processed))
-                                        ;;         )
-                                        ;;   :pool cpu-chan}]
-
-                                        ;; {:xf (fn [data]
-                                        ;;        (tap> {:xf4 data})
-                                        ;;        (conj data :xf4)
-                                        ;;        )}
-                                        ;; {:xf (fn [data]
-                                        ;;        (tap> {:xf5 data})
-
-                                        ;;        ;; (Thread/sleep 1000)
-                                        ;;        (conj data :xf5)
-                                        ;;        )}
-                                        )
-
-                       ;; {:work impl/work}
-                       )
-                 extract-raw-results))
+                  )
+            :any-in   [:a :b]
+            :every-in [:a :b]
+            ;; only ever one return value from a function!!!
+             :out      :b
+            ;; but we can 'spill' this result, if it's spillable, a collection
+             :spill    true
+            :pool  io-chan}
+           {:f   (fn xfb1 [data]
+                    (tap> {:xfb1 data})
+                    ;; (Thread/sleep 200)
+                    ;; (when (= data {:e 2 :xf1 true})
+                    ;;   (throw (ex-info "Error" {:data data}))
+                    ;;   )
+                    (assoc data :xfb1 true)
+                    )
+            ;; :mult true
+            :in   :b
+            :pool io-chan}
+           {:f   (fn xfb2  [data]
+                    (tap> {:xfb2 data})
+                    ;; (Thread/sleep 200)
+                    ;; (when (= data {:e 2 :xf1 true})
+                    ;;   (throw (ex-info "Error" {:data data}))
+                    ;;   )
+                    (assoc data :xfb2 true)
+                    )
+            ;; :mult true
+            :in   :b
+            :pool io-chan}]
+      source (u/channeled [{:e 1}
+                                        ; {:e 2}
+                           ;; {:e 3}
+                           ;; [:e4]
+                           ;; [:e5]
+                           ;; [:e6]
+                           ])]
+  
+    (future
+      (tap> (->> (wrap-and-number source ops)
+                 flow
+                 extract-raw-results
+                 ))
       (a/close! cpu-chan)
       (a/close! io-chan)
-      ))
+      )
+    )
 
 (comment
   (let [{cpu-chan :chan} (threadpool :cpu 1)
