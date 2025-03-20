@@ -13,9 +13,7 @@
    [clj-http.client :as client]
    [org.httpkit.client :as http]
    [pipeline.impl.instrumented :as i]
-   [pipeline.impl.default :as d])
-  )
-
+   [pipeline.impl.default :as d]))
 
 (def group-by-result-type
   (comp (partial group-by (fn [{:keys [data pipeline] :as x}]

@@ -20,6 +20,13 @@
     (if (seq result) result [nil])
     [result]))
 
+(defn queue?
+  "Decide on queueing for further processing. "
+  [{:keys [pipeline data]}]
+  (and (seq pipeline)
+       (some? data)
+       (not (instance? Throwable data))))
+
 (defn apply-xf
   "Actually calls the xf function on data and updates pipe to the next one.
    Returns channel with (possilbe) multiple results. Catches any errors and
@@ -31,12 +38,6 @@
                 (catch Throwable t [t]))]
     (a/to-chan! (map #(merge x {:data %
                                 :pipeline (rest pipeline)}) datas))))
-
-(defn queue?
-  "Decide on queueing for further processing. "
-  [{:keys [pipeline data]}]
-  (and (seq pipeline) (some? data)
-       (not (instance? Throwable data))))
 
 (defn work-async
    "TODO"
