@@ -1,6 +1,7 @@
 (ns pipeline.core2
   (:require
    [clojure.core.async :as a]
+   [clojure.string :as str]
    [pipeline.util :as u]
    [pipeline.impl.default :as d]
    ;; [com.qantashotels.property-content-importer-task.stats :as stats]
@@ -37,14 +38,14 @@
             :ops ops}))
 
 (defn update-hoarder
-  [hoarder grouped-ops id k fut]
+  [hoarder grouped-ops x-id op-id fut]
   (reduce-kv (fn [h in ops]
-               (let [ops? (or (= in k)
+               (let [ops? (or (= in op-id)
                               (and (coll? in)
-                                   (contains? (set in) k)))]
+                                   (contains? (set in) op-id)))]
 
                  (cond-> h
-                   ops? (update-in [id in] update-h k ops fut))))
+                   ops? (update-in [x-id in] update-h op-id ops fut))))
              hoarder
              grouped-ops))
 
@@ -63,16 +64,19 @@
   "Actually calls the xf function on data and updates pipe to the next one.
    Returns channel with (possilbe) multiple, splllt results. Catches any errors
    and assigns them to the :data key."
-  [{:keys [id data ops]
-    {:keys [f spill out]} :op :as x}]
+  [{:keys [data ops]
+    x-id :id
+    {:keys [f spill]
+     op-id :id} :op
+    :as x}]
  ; (tap> {:exec-op x})
   ;; check if for any ops the other inputs have already been resolved, if so,
   ;; if there's no other ops waiting for the result of (f data )  just return a closed channel
   (let [fut (future (try (f data) (catch Throwable t t))) ;; we might want to cancel it
-        [old new]  (when out (let [[old new] (swap-vals! hoarder-atom update-hoarder ops [id ] out fut)]
-                               (tap> {:id id :out out :old old :new new})
-                              [old new]
-                               )
+        [old new]  (when op-id (let [[old new] (swap-vals! hoarder-atom update-hoarder ops x-id op-id fut)]
+                                 (tap> {:x-id x-id :op-id op-id :old old :new new})
+                                 [old new]
+                                 )
                        )
 
         v @fut
@@ -80,11 +84,11 @@
         done? (or (instance? Throwable v)
                   (nil? v)
                   (and spill spillable? (empty? v))
-                  (nil? out))
+                  (nil? op-id))
         next-x (if done?
                  (merge x {:data v
                            :done true})
-                 (let [next-op (get ops out)
+                 (let [next-op (get ops op-id)
                        ;; _ (tap> {:next-op next-op})
 
                        ]
@@ -92,11 +96,11 @@
                              :op   next-op
                              :done (nil? next-op)})))]
     ;; new output channel to put on the queue for flow to process the new x maps
-    (a/to-chan! (if (:done next-x)
-                  [next-x]
-                  (if (and spill spillable?)
-                    (map #(assoc next-x :data %) (:data next-x))
-                    [next-x])))))
+    (if (:done next-x)
+      [next-x]
+      (if (and spill spillable?)
+        (map #(assoc next-x :data %) (:data next-x))
+        [next-x]))))
 
 (defn work-thread
   [id chan]
@@ -106,7 +110,7 @@
       (loop []
         (let [[x _] (a/alts!! [chan close])]
           (when-let [[x output] x]
-            (a/pipe (exec-op x) output)
+            (a/onto-chan! output (exec-op x))
             (recur))))
       (tap> {id "work done"}))
     #(a/close! close)))
@@ -165,71 +169,79 @@
 
 (declare threadpool)
 
+
 (let [{cpu-chan :chan} (threadpool :cpu 1)
       {io-chan :chan}  (threadpool :io 2)
-      ops [;; {:f (fn [data]
-           ;;       (tap> {:xf1 data})
-           ;;       (map #(conj data %) (range 2))
-           ;;       ;; []
+      ops              [;; {:f (fn [data]
+                        ;;       (tap> {:xf1 data})
+                        ;;       (map #(conj data %) (range 2))
+                        ;;       ;; []
 
-           ;;       (conj data :first-op)
-           ;;       )
-           ;;  ;; only ever one return value from a function!!!
-           ;;  ;; :in :property
-           ;;  :in nil
-           ;;  :out      :b
-           ;;  ;; but we can 'spill' this result, if it's spillable, a collection
-           ;;  ;; :spill    true
-           ;;  :pool  io-chan}
-           {:f   (fn io-1 [data]
-                    ;; (tap> {:io-1 data})
-                   (Thread/sleep 20)
-                    (conj data :io-1)
-                    )
-            :in   :property
-            ;;TODO: maybe make it a map with out as the key for each op, which
-            ;;will guarantee uniqueness of out handle
-            :out :io-1 
-            :pool io-chan}
-           {:f   (fn io-2  [data]
-                    ;; (tap> {:io-2 data})
-                   (Thread/sleep 50)
-                    (conj data :io-2)
-                    )
-            :in   :property
-            :out :io-2
-            :pool io-chan}
-           
-           {:f   (fn xfb2  [data]
-                    ;; (tap> {:xfc data})
-                    (conj data :single-in1))
+                        ;;       (conj data :first-op)
+                        ;;       )
+                        ;;  ;; only ever one return value from a function!!!
+                        ;;  ;; :in :property
+                        ;;  :in nil
+                        ;;  :out      :b
+                        ;;  ;; but we can 'spill' this result, if it's spillable, a collection
+                        ;;  ;; :spill    true
+                        ;;  :pool  io-chan}
+                        {:in :property
+                         :id :io-1
+                         :f  (fn io-1 [property]
+                                 ;; (tap> {:io-1 data})
+                                 (Thread/sleep 20)
+                                 (conj property :io-1)
+                                 )
 
-            :in   :io-1
-            :pool io-chan}
-           ;; {:f   (fn xfb2  [data]
-           ;;          (tap> {:xfc data})
-           ;;          (conj data :single-in2))
 
-           ;;  :in   :io-1
-           ;;  :pool io-chan}
-           
-           {:f   (fn h1  [io-1 io-2]
-                   (tap> {:io-collector {:io-1 io-1 :io-2 io-2}})
-                   {:io-collector {:io-1 io-1 :io-2 io-2}})
-            :in   [:io-1 :io-2]
-            :pool io-chan}
-           {:f   (fn h1  [io-1-or-2] ;; whichever is first
-                   (tap> {:io-collector {:io-1-or-2 io-1-or-2}})
-                   {:io-collector {:io-1-or-2 io-1-or-2}})
-            :in   #{:io-1 :io-2}
-            :pool io-chan}
-           ;; {:f   (fn h2  [data-c data-d]
-           ;;         (tap> {:xfc {:data-c data-c :data-d data-d}})
-           ;;         {:xfc {:data-c data-c :data-d data-d}})
-           ;;  :in   [:c :d]
-           ;;  :every true
-           ;;  :pool io-chan}
-           ]
+                         ;;TODO: maybe make it a map with out as the key for each op, which
+                         ;;will guarantee uniqueness of out handle
+                         ;; :out  :io-1
+                         :pool io-chan}
+                        {:in :property
+                         :id :io-2
+                         :f  (fn io-2  [property]
+                                 ;; (tap> {:io-2 data})
+                                 (Thread/sleep 50)
+                                 (conj property :io-2)
+                                 )
+                         
+
+                         ;; :out :io-2
+                         :pool io-chan}
+
+                        {:in [:io-1 :io-2]
+                         :f  (fn p1  [data]
+                              ;; (tap> {:xfc data})
+                              (conj data :single-in1))
+
+                         :pool io-chan}
+                        ;; {:f   (fn xfb2  [data]
+                        ;;          (tap> {:xfc data})
+                        ;;          (conj data :single-in2))
+
+                        ;;  :in   :io-1
+                        ;;  :pool io-chan}
+
+                        {:in   [:io-1 :io-2]
+                         :f    (fn h1  [io-1 io-2]
+                                 (tap> {:io-collector {:io-1 io-1 :io-2 io-2}})
+                                 {:io-collector {:io-1 io-1 :io-2 io-2}})
+                         :pool io-chan}
+                        {:in   #{:io-1 :io-2}
+                         :f    (fn h1  [io-1-or-2] ;; whichever is first
+                                 (tap> {:io-collector {:io-1-or-2 io-1-or-2}})
+                                 {:io-collector {:io-1-or-2 io-1-or-2}})
+
+                         :pool io-chan}
+                        ;; {:f   (fn h2  [data-c data-d]
+                        ;;         (tap> {:xfc {:data-c data-c :data-d data-d}})
+                        ;;         {:xfc {:data-c data-c :data-d data-d}})
+                        ;;  :in   [:c :d]
+                        ;;  :every true
+                        ;;  :pool io-chan}
+                        ]
       source (u/channeled [[0]
                                         ; {:e 2}
                            ;; {:e 3}
