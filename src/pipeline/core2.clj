@@ -17,16 +17,22 @@
 ;;   (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))]
 ;;     (a/pipe source (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %)))))))
 
+(defn ensure-seq
+  [m k]
+  (let [v (get m k)]
+    (cond-> m
+      (and v (not (sequential? v))) (assoc k [v]))))
+
 (defn as-output
   [source {:keys [connect ops pool]}]
-  (let [grouped (reduce #(assoc %1 (:id %2) %2) nil ops)]
-    (tap> {:ops grouped})
+  (let [all-ops (reduce #(assoc %1 (:id %2) (ensure-seq %2 :connect)) nil ops) ]
+    (tap> {:ops all-ops})
     (a/pipe source (a/chan 1 (map-indexed (fn [i d] {:index   i ;;or uuid maybe better? max size is only about 2 billion
                                                      :data    d
-                                                     :op {:f identity
-                                                          :connect connect
-                                                          :pool pool}
-                                                     :ops     (reduce #(assoc %1 (:id %2) %2) nil ops)}))))))
+                                                     :op      {:f       identity
+                                                               :connect [connect]
+                                                               :pool    pool}
+                                                     :all-ops all-ops}))))))
 
 
 
@@ -74,26 +80,24 @@
   "Actually calls the xf function on data and updates pipe to the next one.
    Returns channel with (possilbe) multiple, splllt results. Catches any errors
    and assigns them to the :data key."
-  [{:keys [index data ops]
-    {:keys [f spill connect] :as op} :op
-    :as x}]
- (tap> {:exec x})
+  [{:keys [index all-ops] {:keys [f spill connect]} :op :as x}]
+ ;; (tap> {:exec x})
   ;; check if for any ops the other inputs have already been resolved, if so,
   ;; if there's no other ops waiting for the result of (f data )  just return a closed channel
-  (let [fut      (future (try (f data) (catch Throwable t t))) ;; we might want to cancel it
-        new-data @fut ;; NOTE: deref with timeout here?
-        next-op  (get ops connect)]
+  (let [fut      (future (try (f (:data x)) (catch Throwable t t))) ;; we might want to cancel it
+        data @fut ;; NOTE: deref with timeout here?
+        ops  (seq (keep #(get all-ops %) connect))
+        spill?  (and spill (coll? data))]
     (if (or (instance? Throwable data)
             (nil? data)
             (nil? connect)
-            (nil? next-op)
-            (and spill (coll? new-data) (empty? new-data)))
-      [(assoc x :data new-data :done true)]
-      (let [next-x (assoc x :op next-op)]
-        ;; new output channel to put on the queue for flow to process the new x maps
-        (if (and spill (coll? new-data))
-          (mapv #(assoc next-x :data %) new-data)
-          [(assoc next-x :data new-data)])))))
+            (nil? ops)
+            (and spill? (empty? data)))
+      [(assoc x :data data :done true)]
+      (for [data (cond-> data
+                    (not spill?) vector)
+            op ops]
+        (assoc x :data data :op op)))))
 
 (defn thread
   [id chan]
@@ -128,10 +132,10 @@
             :or   {close? true  out (a/chan)}}]
    (a/go-loop [outputs sources
                i 0] ;;[source xf1-output xf2-output etc], where each vomit x's.
-     (when (< i 10)
+     (when (< i 20)
        (if (seq outputs)
          (let [[x output] (a/alts! outputs :priority true)] ;;move-things along using priority
-           (tap> {:flow x})
+           ;; (tap> {:flow x})
            (recur (if (nil? x) ;; output has been closed, it's been exhausted
                     (remove #(= output %) outputs)
                     (if-not (:done x)
@@ -156,7 +160,7 @@
                    u/as-promise
                    deref
                    ; group-by-result-type
-                   (map #(dissoc % :ops))
+                   (map #(dissoc % :all-ops))
                    )})
 
 
@@ -181,8 +185,8 @@
                               )
                          ;; only ever one return value from a function!!!
                          ;; :in :property
-                          :connect :p1
-                          ;; :connect      [:io-1 :io-2]
+                          ;;:connect :p1
+                           :connect      [:io-1 :io-2]
                          ;; but we can 'spill' this result, if it's spillable, a collection
                          ;; :spill    true
                          :pool  io-chan}
@@ -208,7 +212,7 @@
                          :connect :process-io
                          :pool io-chan}
 
-                        {:id :p1
+                        {:id :process-io
                          :f  (fn p1  [data]
                               ;; (tap> {:xfc data})
                               (conj data :single-in1))
@@ -221,11 +225,11 @@
                         ;;  :in   :io-1
                         ;;  :pool io-chan}
 
-                        {:id :process-io
-                         :f    (fn process-io  [io-1 io-2]
-                                 (tap> {:io-collector {:io-1 io-1 :io-2 io-2}})
-                                 {:io-collector {:io-1 io-1 :io-2 io-2}})
-                         :pool io-chan}
+                        ;; {:id :process-io
+                        ;;  :f    (fn process-io  [io-1 io-2]
+                        ;;          (tap> {:io-collector {:io-1 io-1 :io-2 io-2}})
+                        ;;          {:io-collector {:io-1 io-1 :io-2 io-2}})
+                        ;;  :pool io-chan}
                         ;; {:in   #{:io-1 :io-2}
                         ;;  :f    (fn h1  [io-1-or-2] ;; whichever is first
                         ;;          (tap> {:io-collector {:io-1-or-2 io-1-or-2}})
