@@ -1,21 +1,7 @@
 (ns pipeline.core2
   (:require
    [clojure.core.async :as a]
-   [clojure.string :as str]
-   [pipeline.util :as u]
-   [pipeline.impl.default :as d]
-   ;; [com.qantashotels.property-content-importer-task.stats :as stats]
-   )
-  )
-
-;; (defn create
-;;   "Expects a channel as source, wraps elements in a map each bundled with
-;;    pipeline, when pipeline is a function it'll be called on every source element
-;;    and should return a pipeline (list of maps each with a transforming function
-;;    under the :xf key)."
-;;   [source pipeline]
-;;   (let [pipeline-fn (if (fn? pipeline) pipeline (constantly pipeline))]
-;;     (a/pipe source (a/chan 1 (map #(hash-map :data % :pipeline (pipeline-fn %)))))))
+   [pipeline.util :as u]))
 
 (defn ensure-seq
   [m k]
@@ -33,49 +19,6 @@
                                                                :connect [connect]
                                                                :pool    pool}
                                                      :all-ops all-ops}))))))
-
-
-
-(def hoarder-atom (atom nil))
-
-;; (add-watch hoarder-atom :some-key (fn [k a old new]
-;;                                      (tap> {:add-watch {:old old :new new}})
-;;                                     ))
-
-(defn update-h
-  [m k ops fut]
-  (merge m {k fut
-            :ops ops}))
-
-(defn update-hoarder
-  [hoarder grouped-ops x-id op-id fut]
-  (reduce-kv (fn [h in ops]
-               (let [ops? (or (= in op-id)
-                              (and (coll? in)
-                                   (contains? (set in) op-id)))]
-
-                 (cond-> h
-                   ops? (update-in [x-id in] update-h op-id ops fut))))
-             hoarder
-             grouped-ops))
-
-(defn resolve-multi-in
-  [])
-
-
-
-        ;; when out is nil:
-        ;; - put a done x on the channel
-        ;; when v is throwable or nil or when spill and spillable, it's empty:
-        ;; - cancel all the futures for x.id and remove the entries [0 <any key that takes out>]
-        ;; - put a done x on the channel
-
-
-        ;; [old new]  (when op-id (let [[old new] (swap-vals! hoarder-atom update-hoarder ops x-id op-id fut)]
-        ;;                          (tap> {:x-id x-id :op-id op-id :old old :new new})
-        ;;                          [old new]))
-
-
 (defn exec
   "Actually calls the xf function on data and updates pipe to the next one.
    Returns channel with (possilbe) multiple, splllt results. Catches any errors
@@ -119,11 +62,6 @@
   (let [output (a/chan)]
     (a/go (a/>! (:pool op) [x output]))
     output)
-  ;; (letfn [(next-output [{:keys [pool] :as x}]
-  ;;           (let [output (a/chan)]
-  ;;             (a/go (a/>! pool [x output]))
-  ;;             output))]
-  ;;   (a/merge (map #(next-output (assoc x :op %)) op)))
   )
 
 (defn flow
@@ -364,5 +302,11 @@
     (.interrupt t)
     )
 
-(future)
  )
+
+
+  ;; (letfn [(next-output [{:keys [pool] :as x}]
+  ;;           (let [output (a/chan)]
+  ;;             (a/go (a/>! pool [x output]))
+  ;;             output))]
+  ;;   (a/merge (map #(next-output (assoc x :op %)) op)))
