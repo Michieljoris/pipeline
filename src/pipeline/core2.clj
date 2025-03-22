@@ -3,56 +3,54 @@
    [clojure.core.async :as a]
    [pipeline.util :as u]))
 
-(defn ensure-seq
-  [m k]
-  (let [v (get m k)]
-    (cond-> m
-      (and v (not (sequential? v))) (assoc k [v]))))
+;; Considerations
+;; - maybe add all-ops to every x?  It is possible this way to change ops mid processing thoughs
+;;- replace keywords in connect with the actual ops. saves some looking up and checking in exec fn
+;;- it's possible to 'join' (async) data streams, and continue as soon as something arrives, or block till everything is there
+;;  but this can be implemented 100% in 'user' space. Add an atom before splitting a data into two or more blocking io ops
+;;  then execute the io in a future, add the future to the atom and deref (block) the future. Do this is for each io op
+;;  All io ops should connect to an aggregator fn. For 'any' logic, continue with data passed in but future-cancel any unrealized futures in the atom
+;; For 'every' logic, check if there's any unrealized futures, if so return nil and do nothing. When all futures are realized, deref them and
+;; process them.
 
-(defn as-output
-  [source {:keys [connect ops pool]}]
-  (let [all-ops (reduce #(assoc %1 (:id %2) (ensure-seq %2 :connect)) nil ops) ]
-    (tap> {:ops all-ops})
-    (a/pipe source (a/chan 1 (map-indexed (fn [i d] {:index   i ;;or uuid maybe better? max size is only about 2 billion
-                                                     :data    d
-                                                     :op      {:f       identity
-                                                               :connect [connect]
-                                                               :pool    pool}
-                                                     :all-ops all-ops}))))))
+;; TODO:
+;; - update readme and implementations and tests
+;; - hydrate connect keyword
+;; - add examples of parallel io
+;; - explain logic of core.clj and how every x holds a return value and the op to be applied to it.
+;;   and how a op can result in "spilt' results, each processed further with the next connect
+;;   and how any op can connect zero, one or more than other other op, and also be spilled as well..
+;; - update doc strings
+
+;; ====================================================================================================
+
 (defn exec
   "Actually calls the xf function on data and updates pipe to the next one.
    Returns channel with (possilbe) multiple, splllt results. Catches any errors
    and assigns them to the :data key."
-  [{:keys [index all-ops] {:keys [f spill connect]} :op :as x}]
- ;; (tap> {:exec x})
-  ;; check if for any ops the other inputs have already been resolved, if so,
-  ;; if there's no other ops waiting for the result of (f data )  just return a closed channel
-  (let [fut      (future (try (f (:data x)) (catch Throwable t t))) ;; we might want to cancel it
-        data @fut ;; NOTE: deref with timeout here?
-        ops  (seq (keep #(get all-ops %) connect))
-        spill?  (and spill (coll? data))]
-    (if (or (instance? Throwable data)
-            (nil? data)
-            (nil? connect)
-            (nil? ops)
-            (and spill? (empty? data)))
-      [(assoc x :data data :done true)]
-      (for [data (cond-> data
-                    (not spill?) vector)
-            op ops]
-        (assoc x :data data :op op)))))
+  [{:keys [data op all-ops] :as x}]
+  (let [{:keys [f spill connect]} op
+        ret (try (f data) (catch Throwable t t))
+        spill? (and spill (coll? ret))
+        ops (mapv #(get all-ops %) connect)  ;;NOTE: maybe memoize? Or prehyydrate
+        done? (or (instance? Throwable ret)
+                  (nil? ret)
+                  (and spill? (empty? ret))
+                  (empty? ops))] ;; never empty if prehydrated
+    (if done? [ret]
+       (for [data (cond-> ret (not spill?) vector)
+             op ops]
+         (assoc x :data data :op op)))))
 
 (defn thread
   [id chan]
   (let [close (a/chan)]
     (a/thread
-      (tap> {id "started-work"})
       (loop []
         (let [[x _] (a/alts!! [chan close])]
           (when-let [[x output] x]
             (a/onto-chan! output (exec x))
-            (recur))))
-      (tap> {id "work done"}))
+            (recur)))))
     #(a/close! close)))
 
 (defn queue
@@ -61,28 +59,25 @@
   [{:keys [op] :as x}]
   (let [output (a/chan)]
     (a/go (a/>! (:pool op) [x output]))
-    output)
-  )
+    output))
 
 (defn flow
-  ([source] (flow source nil))
+  ([sources] (flow sources nil))
   ([sources {:keys [out close?]
-            :or   {close? true  out (a/chan)}}]
-   (a/go-loop [outputs sources
-               i 0] ;;[source xf1-output xf2-output etc], where each vomit x's.
-     (when (< i 20)
-       (if (seq outputs)
-         (let [[x output] (a/alts! outputs :priority true)] ;;move-things along using priority
-           ;; (tap> {:flow x})
-           (recur (if (nil? x) ;; output has been closed, it's been exhausted
-                    (remove #(= output %) outputs)
-                    (if-not (:done x)
-                      (conj outputs (queue x))
-                      (do (a/>! out x)
-                          outputs)))
-                  (inc i)))
-         (when close? (a/close! out)))))
+             :or   {close? true  out (a/chan)}}]
+   (a/go-loop [outputs sources] ;;[source xf1-output xf2-output etc], where each vomit x's.
+     (if (seq outputs)
+       (let [[x output] (a/alts! outputs :priority true)] ;;move-things along using priority
+         (recur (if (nil? x) ;; output has been closed, it's been exhausted
+                  (remove #(= output %) outputs)
+                  (if (:op x)
+                    (conj outputs (queue x))
+                    (do (a/>! out x)
+                        outputs)))))
+       (when close? (a/close! out))))
    out))
+
+;; ====================================================================================================
 
 
 (def group-by-result-type
@@ -98,64 +93,60 @@
                    u/as-promise
                    deref
                    ; group-by-result-type
-                   (map #(dissoc % :all-ops))
+                   ;; (map #(dissoc % :all-ops))
                    )})
 
 
-  ;; (defn wrap-and-number [source ops]
-  ;;   (let [input (as-input source :property  ops)
-  ;;         numbered (a/chan 1 (map-indexed (fn [i x] (assoc x :index i))))]
-  ;;     [(a/pipe input numbered)]))
-
 (declare threadpool)
 
+(defn as-output
+  [source ops op]
+  (a/pipe source (a/chan 1 (map-indexed (fn [i d] {:index   i
+                                                   :data    d
+                                                   :op      op
+                                                   :all-ops ops})))))
 
+
+(tap> :====================================================================================================)
 (let [{cpu-chan :chan} (threadpool :cpu 1)
       {io-chan :chan}  (threadpool :io 2)
-      ops              [ {:id :step-1
-                          :f (fn [data]
-                               (tap> {:step-1 data})
-                               ;; (map #(conj data %) (range 2))
-                               ;; []
+      ops              {:step-1 {:id :step-1
+                                 :f  (fn [data]
+                                       (tap> {:step-1 data})
+                                       ;; (map #(conj data %) (range 2))
+                                       ;; []
 
 
-                              (conj data :first-op)
-                              )
-                         ;; only ever one return value from a function!!!
-                         ;; :in :property
-                          ;;:connect :p1
-                           :connect      [:io-1 :io-2]
-                         ;; but we can 'spill' this result, if it's spillable, a collection
-                         ;; :spill    true
-                         :pool  io-chan}
-                        {:id :io-1
-                         :f  (fn io-1 [property]
-                                 ;; (tap> {:io-1 data})
-                                 (Thread/sleep 20)
-                                 (conj property :io-1)
-                                 )
-                         :connect :process-io
+                                       (conj data :first-op)
+                                       )
+                                 :connect [:io-1 :io-2]
+                                 ;; but we can 'spill' this result, if it's spillable, a collection
+                                 ;; :spill    true
+                                 :pool    io-chan}
+                        :io-1 {:id      :io-1
+                               :f       (fn io-1 [property]
+                                          ;; (tap> {:io-1 data})
+                                          (Thread/sleep 20)
+                                          (conj property :io-1)
+                                          )
+                               :connect [:process-io]
+                               :pool    io-chan}
+                        :io-2 {:id :io-2
+                               :f  (fn io-2  [property]
+                                     ;; (tap> {:io-2 data})
+                                     (Thread/sleep 50)
+                                     (conj property :io-2)
+                                     )
 
-                         ;;TODO: maybe make it a map with out as the key for each op, which
-                         ;;will guarantee uniqueness of out handle
-                         ;; :out  :io-1
-                         :pool io-chan}
-                        {:id :io-2
-                         :f  (fn io-2  [property]
-                                 ;; (tap> {:io-2 data})
-                                 (Thread/sleep 50)
-                                 (conj property :io-2)
-                                 )
-                         
-                         :connect :process-io
-                         :pool io-chan}
+                               :connect [:process-io]
+                               :pool    io-chan}
 
-                        {:id :process-io
-                         :f  (fn p1  [data]
-                              ;; (tap> {:xfc data})
-                              (conj data :single-in1))
+                        :process-io {:id :process-io
+                                     :f  (fn p1  [data]
+                                           ;; (tap> {:xfc data})
+                                           (conj data :single-in1))
 
-                         :pool io-chan}
+                                     :pool io-chan}
                         ;; {:f   (fn xfb2  [data]
                         ;;          (tap> {:xfc data})
                         ;;          (conj data :single-in2))
@@ -180,7 +171,7 @@
                         ;;  :in   [:c :d]
                         ;;  :every true
                         ;;  :pool io-chan}
-                        ]
+                        }
       source (u/channeled [[0]
                                         ; {:e 2}
                            ;; {:e 3}
@@ -190,12 +181,14 @@
                            ])]
   
     (future
-      (tap> (->> [(as-output source {:connect :step-1 :ops ops :pool cpu-chan})]
-                 flow
-                 extract-raw-results
-                 ))
-      (a/close! cpu-chan)
-      (a/close! io-chan)
+     (try
+       (tap> (-> (flow [(as-output source ops (get ops :step-1))])
+                 extract-raw-results))
+       (tap> :closing-threads)
+       (a/close! cpu-chan)
+       (a/close! io-chan)
+       (catch Exception e (tap> {:e e}))
+       )
       )
     )
 
